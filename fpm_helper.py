@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 from matplotlib import image
 import math
 import os
-from IPython import display # for refreshing plotting
-
+# from IPython import display # for refreshing plotting
+plot_flag = True
 
 def use_gpu(gpu=2):
     if gpu is not None:
@@ -16,7 +16,7 @@ def use_gpu(gpu=2):
     else:
         device = torch.device('cpu') # uncomment this line to use cpu
     torch.cuda.empty_cache()  #empty any variables in cache to free up space
-    # print(device)
+    print(device)
     return device
 
 def preprocessObject(im):
@@ -59,30 +59,45 @@ class FPM_setup():
         # Handle camera pixel size, default to 4 microns if no argument is provided
         if pix_size_camera is None:
             self.pix_size_camera = 4  # micron
-        else:
+        elif isinstance(pix_size_camera, (int, float)):
             self.pix_size_camera = pix_size_camera
+        else:
+            raise TypeError("pix_size_camera must be a scalar (int or float)")
         
         # Handle magnification, default to 1 if not provided
         if mag is None:
-            mag = 1  # Default magnification if no argument is passed
+            self.mag = 1  # Default magnification if no argument is passed
+        elif isinstance(mag, (int, float)):
+            self.mag = mag
+        else:
+            raise TypeError("mag must be a scalar (int or float)")
         
-        self.pix_size_object = self.pix_size_camera / mag  # Calculate based on magnification
-        
+        self.pix_size_object = self.pix_size_camera / self.mag  # Calculate based on magnification
+
         # Handle wavelength, default to 500e-3 if not provided
         if wv is None:
-            self.wv = np.array(500e-3)  # micron
-            self.wv = np.expand_dims(self.wv, axis=0) 
-            self.Nw = 1  # Number of wavelengths
-        else:
+            self.wv = torch.Tensor([500e-3])  # micron
+        elif np.isscalar(wv):
+            self.wv = torch.Tensor(wv)   # Convert scalar to Tensor
+        elif isinstance(wv, np.ndarray):
+            self.wv =  torch.Tensor(wv)  # Convert NumPy array to Tensor
+        elif isinstance(wv, torch.Tensor):
             self.wv = wv
-            self.Nw = len(self.wv) # Number of wavelengths
-        
+        else:
+            raise TypeError("wv must be a scalar, None, or a NumPy ndarray")
+
+        self.Nw = len(self.wv) # Number of wavelengths
+
         # Handle NA, default to 0.05 if not provided
         if na_obj is None:
             self.na_obj = 0.05  # Default NA
-        else:
+        elif isinstance(na_obj, (int, float)):
             self.na_obj = na_obj
+        else:
+            raise TypeError("na_obj must be a scalar (int or float)")
+
         if Nx is None:  # use stock object data if no Nx Ny info is provided
+            print('Using stock object data')
             path = '/mnt/neerja-DATA/SpectralFPMData/usafrestarget.jpeg'
             im = torch.from_numpy(image.imread(path))[:,:,0] # pick out the first channel
             im = preprocessObject(im)
@@ -91,6 +106,7 @@ class FPM_setup():
             self.Ny = Ny
             self.Npixel = Ny
         else:
+            print('Using provided Nx and Ny')
             self.Nx = Nx
             self.Ny = Ny
             self.Npixel = Ny
@@ -157,7 +173,7 @@ class FPM_setup():
     def createIllumField(self, illum_angle, wv):
         rady = illum_angle[0]
         radx = illum_angle[1]
-        k0 = 2*math.pi/wv
+        k0 = 2*math.pi/torch.Tensor(wv) # turn into tensor
         ky = k0*math.sin(rady)
         kx = k0*math.sin(radx)
         field = torch.exp(1j*kx*self.xygrid[1] + 1j*ky*self.xygrid[0])
@@ -215,5 +231,13 @@ def createRandomAngleMeasStack(fpm_setup):
         fpm_setup.illumstack = illumstack
         # simulate the forward measurement
         (y, pup_obj) = fpm_setup.forwardSFPM()
+        
+            # plot some example measurements
+        if k2<5 and plot_flag:
+            plt.figure(figsize=(10,10))
+            plt.subplot(1,4,1)
+            plt.imshow(torch.log10(torch.abs(pup_obj)),'gray')
+            plt.subplot(1,4,2)
+            plt.imshow(torch.abs(y),'gray')
         measstack[k2,:,:] = y
     return (measstack, list_leds)
