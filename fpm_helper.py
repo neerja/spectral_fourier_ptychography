@@ -1,4 +1,3 @@
-
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -39,6 +38,7 @@ def preprocessObject(im):
     return im
 
 def createlist_led(num_leds=100,minval=-3,maxval=3):
+    np.random.seed(0) # for debugging and reproducibility
     list_leds = np.random.uniform(low = minval, high = maxval, size = (num_leds,2))
     # append a (0,0) bf led
     list_leds = np.append(list_leds,np.zeros([1,2]), axis = 0 )
@@ -47,7 +47,7 @@ def createlist_led(num_leds=100,minval=-3,maxval=3):
     return list_leds
 
 class FPM_setup():
-    def __init__(self, pix_size_camera=None, mag=None, wv=None, na_obj=None,Nx=None,Ny=None):
+    def __init__(self, pix_size_camera=None, mag=None, wv=None, na_obj=None,Nx=None,Ny=None, led_spacing=5, dist=75, list_leds=None):
         """
         Constructor that supports different setups based on whether arguments are provided.
         
@@ -86,7 +86,7 @@ class FPM_setup():
         elif isinstance(wv, torch.Tensor):
             self.wv = wv
         else:
-            raise TypeError("wv must be a scalar, None, or a NumPy ndarray")
+            raise TypeError("wv must be a scalar, None, or a NumPy array or torch Tensor")
 
         self.Nw = len(self.wv) # Number of wavelengths
 
@@ -117,12 +117,35 @@ class FPM_setup():
         self.createXYgrid()
 
         # create pupil stack for setup
-        self.createPupilStack()
+        self.createPupilStack()  
 
         # create default uniform spectral object
         self.makeUniformSpectralObject()
 
-        # make a uniform spectral object
+        # Initialize LED-related attributes
+        self.led_spacing = led_spacing
+        self.dist = dist
+        self.list_leds = list_leds
+    
+    def __str__(self):
+        # Return a string representation of the FPM_setup object
+        return (
+            f"FPM Setup Parameters:\n"
+            f"--------------------\n"
+            f"Camera pixel size: {self.pix_size_camera} microns\n"
+            f"Magnification: {self.mag}x\n"
+            f"Object pixel size: {self.pix_size_object:.3f} microns\n"
+            f"Numerical aperture: {self.na_obj}\n"
+            f"Wavelength(s): {self.wv.numpy()} microns\n"
+            f"Number of wavelengths: {self.Nw}\n"
+            f"Image dimensions: {self.Nx} x {self.Ny} pixels\n"
+            f"LED Spacing: {self.led_spacing} mm\n"
+            f"Distance: {self.dist} mm\n"
+            f"LED List: {self.list_leds}\n"
+            f"--------------------"
+        )
+
+    # make a uniform spectral object
     def makeUniformSpectralObject(self,obj=None):
         if obj is None: # use stock object data if no object is provided
             path = '/mnt/neerja-DATA/SpectralFPMData/usafrestarget.jpeg'
@@ -132,6 +155,7 @@ class FPM_setup():
         spectrum = torch.ones([self.Nw,1,1])  # create a spectrum vector with dimension (Nw, 1,1)
         spectral_obj = obj.unsqueeze(0)*spectrum  # elementwise multiply with the sample after expanding dim0 to be wavelength
         self.objstack = spectral_obj
+        self.obj = obj
         return self.objstack
 
     def createPupilStop(self, wv):
@@ -198,79 +222,128 @@ class FPM_setup():
             field = self.illumstack[k]
             obj_field = field*obj
             # take the fourier transform and center in pupil plane
-            pup_obj = torch.fft.fftshift(torch.fft.fft2(obj_field))*pupil
+            pup_obj = torch.fft.fftshift(torch.fft.fft2(obj_field), dim = (-1, -2))*pupil
             # multiply object's FFT with the pupil stop and take ifft to get measurement
-            y[k] = torch.abs(torch.fft.ifft2(torch.fft.fftshift(pup_obj)))
+            y[k] = torch.abs(torch.fft.ifft2(torch.fft.ifftshift(pup_obj,  dim=(-1, -2))))
         y = torch.sum(y,0)
         return (y, pup_obj)
 
         # create list of illumination angles (leds) to turn on one at a time
     
-    def forwardFPM(self,obj,pupil,field):
+    def forwardFPM(self):
         # multiply by the sample
-        obj_field = field*obj
+        obj_field = self.field*self.obj
         # take the fourier transform and center in pupil plane
-        pup_obj = torch.fft.fftshift(torch.fft.fft2(obj_field))*pupil
+        pup_obj = torch.fft.fftshift(torch.fft.fft2(obj_field))*self.pupil
         # multiply object's FFT with the pupil stop and take ifft to get measurement
         y = torch.abs(torch.fft.ifft2(torch.fft.fftshift(pup_obj)))
         return (y, pup_obj)
+    
+    def to(self, device):
+        # Move each tensor attribute to the specified device if it exists
+        if hasattr(self, 'obj'):
+            self.obj = self.obj.to(device)
+        if hasattr(self, 'field'):
+            self.field = self.field.to(device)
+        if hasattr(self, 'pupil'):
+            self.pupil = self.pupil.to(device)
+        if hasattr(self, 'xygrid'):
+            self.xygrid = self.xygrid.to(device)
+        if hasattr(self, 'pupilstack'):
+            self.pupilstack = self.pupilstack.to(device)
+        if hasattr(self, 'illumstack'):
+            self.illumstack = self.illumstack.to(device)
+        if hasattr(self, 'objstack'):
+            self.objstack = self.objstack.to(device)
 
+    def led_ind_to_illum_angle(self, led_ind):
+        """
+        Convert LED indices to illumination angles.
 
-def createRandomAngleMeasStack(fpm_setup, list_leds, d=75, led_spacing=5):
-    if list_leds is None:
-        raise ValueError("list_leds must be provided")
-    # create measurement stack
-    num_meas = len(list_leds) 
-    measstack = torch.zeros(num_meas,fpm_setup.Ny,fpm_setup.Nx)
+        Args:
+            led_ind (tuple): The LED indices (y, x).
 
-    for k2 in np.arange(len(list_leds)):
-        # take led indices and calculate angle of incidence
-        led_ind = list_leds[k2]  
-        led_pos = (led_ind[0]*led_spacing,led_ind[1]*led_spacing,d) # units = millimeters, (y,x,z)
-        illum_angle = (np.arctan(led_pos[0]/led_pos[2]), np.arctan(led_pos[1]/led_pos[2])) 
+        Returns:
+            tuple: The illumination angles (rady, radx).
+        """
+        led_pos = (led_ind[0] * self.led_spacing, led_ind[1] * self.led_spacing, self.dist)  # units = millimeters, (y, x, z)
+        illum_angle = (np.arctan(led_pos[0] / led_pos[2]), np.arctan(led_pos[1] / led_pos[2]))
+        return illum_angle
 
-        # create illumination field stack 
-        fpm_setup.createFixedAngleIllumStack(illum_angle)
+    def createRandomAngleMeasStack(self, list_leds=None, dist=None, led_spacing=None):
+        self.list_leds = list_leds
+        if self.list_leds is None:  # Handles both empty list and None cases
+            raise ValueError("list_leds must be provided")
+        # update distance and led spacing if provided
+        if dist is not None:
+            self.dist = dist
+        if led_spacing is not None:
+            self.led_spacing = led_spacing
 
-        # simulate the forward measurement
-        (y, pup_obj) = fpm_setup.forwardFPM(fpm_setup.objstack[0],fpm_setup.pupilstack[0],fpm_setup.illumstack[0])
-        # (y, pup_obj) = fpm_setup.forwardSFPM()
-        
+        # create measurement stack
+        num_meas = len(self.list_leds)
+        measstack = torch.zeros(num_meas, self.Ny, self.Nx)
+
+        for k2 in np.arange(num_meas):
+            # take led indices and calculate angle of incidence
+            led_ind = self.list_leds[k2]
+            illum_angle = self.led_ind_to_illum_angle(led_ind)
+
+            # create illumination field stack for spectrally uniform broadband led
+            self.createFixedAngleIllumStack(illum_angle)
+
+            # simulate the forward measurement
+            (y, pup_obj) = self.forwardSFPM() 
+            
             # plot some example measurements
-        if k2<5 and plot_flag:
-            plt.figure(figsize=(10,10))
-            plt.subplot(1,4,1)
-            plt.imshow(torch.log10(torch.abs(pup_obj)),'gray')
-            plt.subplot(1,4,2)
-            plt.imshow(torch.abs(y),'gray')
-        measstack[k2,:,:] = y
-    return (measstack, list_leds)
+            if k2 < 5 and plot_flag:
+                plt.figure(figsize=(10, 10))
+                plt.subplot(1, 4, 1)
+                plt.imshow(torch.log10(torch.abs(pup_obj)))
+                plt.subplot(1, 4, 2)
+                plt.imshow(y, 'gray')
+                plt.subplot(1, 4, 3)
+                plt.imshow(torch.log(torch.abs(torch.fft.fftshift(torch.fft.fft2(y)))))
+            measstack[k2, :, :] = y
+        self.measstack = measstack
+        return (measstack, self.list_leds)
 
 class Reconstruction():
     # create a Reconstruction object based on fpm setup
-    def __init__(self, fpm_setup, measstack, list_leds, led_spacing=5, dist=75, device = 'cpu'):
+    def __init__(self, fpm_setup, measstack=None, device = 'cpu'):
+        self.fpm_setup = fpm_setup
         self.Nw = fpm_setup.Nw
         self.Nx = fpm_setup.Nx
         self.Ny = fpm_setup.Ny
-        self.measstack = measstack
-        self.list_leds = list_leds
-        self.Nleds = len(list_leds)
+        if measstack is not None: # update measstack if provided
+           self.fpm_setup.measstack = measstack
+        self.num_meas = len(self.fpm_setup.measstack)
         self.objest = None
-        self.led_spacing = led_spacing
-        self.dist = dist
         self.device = use_gpu(device)
-        self.fpm_setup = fpm_setup
         self.initRecon()
+    
+    def __str__(self):
+        # Return a string representation of the Reconstruction object
+        return (
+            "Reconstruction Parameters:\n"
+            + "-" * 20 + "\n"
+            + f"Number of  measurements: {self.num_meas}\n"
+            + f"Device: {self.device}\n"
+            + "-" * 20 + "\n"
+            + str(self.fpm_setup)
+        )
 
     # initialize the object estimate
     def initRecon(self, obj=None):
         # initialize the object estimate
         if obj is None:
             init_spectrum = torch.ones([self.Nw,1,1]) 
-            self.obj_est = self.measstack[0,:,:].unsqueeze(0).to(self.device)*init_spectrum.to(self.device)
+            self.objest = self.fpm_setup.measstack[0,:,:].unsqueeze(0).to(self.device)*init_spectrum.to(self.device)
+            self.objest = self.objest/ torch.amax(self.objest) # normalize to max value is 1
         else:
             self.objest = obj
-        self.obj_est.requires_grad = True
+
+        self.objest.requires_grad = True
         self.losses = []
         return self.objest
     
@@ -278,7 +351,7 @@ class Reconstruction():
         return torch.maximum(x,torch.tensor(val))
     
     # set hyperparameters
-    def parameters(self, step_size = 1e1, num_iters = 100, loss_type = 'MSE', epochs = 1, opt_type = 'Adam'):
+    def parameters(self, step_size = 1e1, num_iters = 100, loss_type = '2-norm', epochs = 1, opt_type = 'Adam'):
         # set hyperparameters
 
         # check that arguments are of right type
@@ -295,7 +368,6 @@ class Reconstruction():
         
         self.step_size = step_size
         self.num_iters = num_iters
-        self.num_meas = len(self.measstack)
         self.epochs = epochs
         self.losses =[]
         self.set_loss(loss_type)
@@ -304,13 +376,15 @@ class Reconstruction():
     def set_loss(self, loss_type):
         if loss_type == 'MSE':
             self.lossfunc = torch.nn.MSELoss()
+        if loss_type == '2-norm':
+            self.lossfunc = lambda yest, meas: torch.norm(yest-meas)
         else:
             raise ValueError("Loss type not recognized")
         return self.lossfunc
     
     def set_optimizer(self, opt_type):
         if opt_type == 'Adam':
-            self.optimizer = torch.optim.Adam([self.obj_est], lr=self.step_size)  # Adam optimizer
+            self.optimizer = torch.optim.Adam([self.objest], lr=self.step_size)  # Adam optimizer
         else:
             raise ValueError("Optimizer type not recognized")
         return self.optimizer
@@ -319,25 +393,22 @@ class Reconstruction():
         # move to gpu
         if self.device.type == 'cuda':
             with torch.no_grad():
-                obj_est = self.obj_est.to(self.device)
-                self.fpm_setup.pupilstack = self.fpm_setup.pupilstack.to(self.device)
-                self.measstack = self.measstack.to(self.device)
-                self.fpm_setup.illumstack = self.fpm_setup.illumstack.to(self.device)
+                self.objest = self.objest.to(self.device)
+                self.fpm_setup.measstack = self.fpm_setup.measstack.to(self.device)
+                self.fpm_setup.to(self.device)
                 
-            self.obj_est.requires_grad = True
+            self.objest.requires_grad = True
         
-        # train the obj_est
+        # train the objest
         for k3 in np.arange(self.epochs): # loop through epochs
             for k2 in np.arange(self.num_meas): # loop through measurements
                                 # print(k1,k2)
                 # get relevant actual measurement and move to gpu
-                meas = self.measstack[k2,:,:]
+                meas = self.fpm_setup.measstack[k2,:,:].double().to(self.device)
                 # loop through wavelength 
                 # compute illumination angle from led indices
-                led_ind = self.list_leds[k2]   
-                led_pos = (led_ind[0]*self.led_spacing,led_ind[1]*self.led_spacing,self.dist) # units = millimeters, (x,y,z)
-                illum_angle = (np.arctan(led_pos[1]/led_pos[2]), np.arctan(led_pos[0]/led_pos[2]))
-
+                led_ind = self.fpm_setup.list_leds[k2]   
+                illum_angle = self.fpm_setup.led_ind_to_illum_angle(led_ind) 
                 # create illumination stack
                 self.fpm_setup.createFixedAngleIllumStack(illum_angle)
                 self.fpm_setup.illumstack = self.fpm_setup.illumstack.to(self.device)
@@ -345,17 +416,20 @@ class Reconstruction():
                 for k1 in np.arange(self.num_iters): # loop through iterations
 
                     # simulate the forward measurement
-                    self.fpm_setup.objstack = self.obj_est
-                    # (yest, pup_obj) = self.fpm_setup.forwardSFPM()
-                    (yest, pup_obj) = self.fpm_setup.forwardFPM(self.obj_est[0],self.fpm_setup.pupilstack[0],self.fpm_setup.illumstack[0])
+                    self.fpm_setup.objstack = self.objest
+
+
+                    (yest, pup_obj) = self.fpm_setup.forwardSFPM()
+
                     # calculate error, aka loss, and backpropagate
                     error = self.lossfunc(yest,meas)
+
                     self.losses.append(error.detach().cpu())
                     error.backward()
                     # print(error)
 
                     # Update the object's reconstruction estimate using the optimizer
-                    self.optimizer.step()  # Apply the Adam update to obj_est
+                    self.optimizer.step()  # Apply the Adam update to objest
                     self.optimizer.zero_grad()  # Clear gradients after each step
 
                     if k1 == self.num_iters - 1:
@@ -367,44 +441,42 @@ class Reconstruction():
                         except KeyboardInterrupt:
                             break
         
-    def visualize(self,k1,k2,k3):
-        # Recreate the figure with two subplots
-        fig, (ax_obj, ax_fft) = plt.subplots(1, 2, figsize=(16, 6))  # Create a figure with two axes
+    def visualize(self, k1, k2, k3):
+        # Clear the current figures to update them with new data
+        plt.close('all')  # Close all existing figures
 
-        # Plot the loss over time (assuming this is part of a larger script with loss tracking)
-        loss_fig, ax_loss = plt.subplots(figsize=(8, 6))  # Create a new figure for the loss
-        ax_loss.cla()  # Clear the axis for updated plot
+        # Create a figure for the loss plot
+        loss_fig, ax_loss = plt.subplots(figsize=(8, 6))
         ax_loss.semilogy(self.losses)
         ax_loss.set_title('Loss over time')
         ax_loss.set_xlabel('Iteration')
         ax_loss.set_ylabel('Loss')
 
-        # Plot the object estimate on the left side
-        ax_obj.cla()  # Clear the axis for updated plot
-        obj2d = np.sum(self.obj_est.detach().cpu().numpy(), axis=0)  # Sum over wavelengths
+        # Create a figure with two subplots for the object estimate and its FFT
+        fig, (ax_obj, ax_fft) = plt.subplots(1, 2, figsize=(16, 6))
+
+        # Plot the object estimate
+        obj2d = np.sum(self.objest.detach().cpu().numpy(), axis=0)  # Sum over wavelengths
         im_obj = ax_obj.imshow(obj2d, cmap='gray')
         ax_obj.set_title('Object 2D Estimate after Epoch {} Meas {} Iter {}'.format(k3+1, k2+1, k1+1))
-        colorbar_obj = fig.colorbar(im_obj, ax=ax_obj, orientation='vertical')  # Add colorbar for obj_est
+        fig.colorbar(im_obj, ax=ax_obj, orientation='vertical')  # Add colorbar for objest
 
-        # Plot the FFT of the object estimate on the right side
-        ax_fft.cla()  # Clear the axis for updated plot
+        # Plot the FFT of the object estimate
         fftobj2d = np.fft.fftshift(np.fft.fft2(obj2d))
         im_fft = ax_fft.imshow(np.log(np.abs(fftobj2d)), cmap='viridis')  # Plot the magnitude of the FFT
         ax_fft.set_title('FFT of Object 2D Estimate')
-        colorbar_fft = fig.colorbar(im_fft, ax=ax_fft, orientation='vertical')  # Add colorbar for FFT
+        fig.colorbar(im_fft, ax=ax_fft, orientation='vertical')  # Add colorbar for FFT
 
-        # Save figure
+        # Save the object estimate and FFT figure
         fig.savefig('object_estimate_fft.png', bbox_inches='tight')  # Save with tight layout
 
-        # Display the updated loss figure
-        display.display(loss_fig)  # Display the updated loss figure
-        display.clear_output(wait=True)  # Update display
-
-        # Display the figure
-        display.display(fig)  # Update display
+        # Display the updated figures
+        display.display(loss_fig)
+        display.display(fig)
         display.clear_output(wait=True)  # Update display
 
 def debug_plot(obj): #obj is torch tensor
-    plt.imshow(np.abs(np.sum(obj.illumstack.detach().cpu().numpy(), axis=0)))
+    plt.imshow(np.abs(np.sum(obj.detach().cpu().numpy(), axis=0)))
     plt.colorbar()
     plt.show()
+
