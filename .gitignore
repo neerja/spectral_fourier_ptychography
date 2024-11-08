@@ -1,0 +1,21 @@
+# ignore all pycache files
+__pycache__/
+
+# ignore all .ipynb_checkpoints
+.ipynb_checkpoints/
+
+# ignore all .DS_Store files
+.DS_Store
+
+# ignore all .vscode files
+.vscode/
+
+#ignore cursors
+.cursorignore
+
+# ignore images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
