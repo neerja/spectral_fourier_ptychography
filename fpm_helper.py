@@ -57,7 +57,7 @@ def preprocessObject(im):
 
 def createlist_led(num_leds=100, minval=-3, maxval=3):
     """
-    Create a list of LED positions.
+    Create a list of LED positions.  Start random seed at 0 for reproducibility.
 
     Args:
         num_leds (int): Number of LEDs. Defaults to 100.
@@ -77,7 +77,9 @@ def createlist_led(num_leds=100, minval=-3, maxval=3):
 
 class FPM_setup:
     """
-    Class to set up the Fourier Ptychographic Microscopy (FPM) system.
+    Class to set up the Fourier Ptychographic Microscopy (FPM) system.  
+    It will contain the object, illumination field, pupil stop, and measurement.
+    It will also contain the physical parameters associatied with the microsocope (ex: mag, NA, etc).
     """
 
     def __init__(self, pix_size_camera=None, mag=None, wv=None, na_obj=None, Nx=None, Ny=None, led_spacing=5, dist=75, list_leds=None):
@@ -164,6 +166,7 @@ class FPM_setup:
         self.led_spacing = led_spacing
         self.dist = dist
         self.list_leds = list_leds
+        self.list_illums = None # Populated after illumination strategy is set
 
     def __str__(self):
         """
@@ -227,7 +230,7 @@ class FPM_setup:
 
     def createPupilStack(self):
         """
-        Create a stack of pupil stops for each wavelength.
+        Create a stack of pupil stops, one for each wavelength channel.
 
         Returns:
             torch.Tensor: The pupil stack.
@@ -241,7 +244,7 @@ class FPM_setup:
 
     def createXYgrid(self):
         """
-        Create an xy grid for object space.
+        Create an xy grid for object space.  Note, depends on camera pixel size and magnification.
 
         Returns:
             torch.Tensor: The xy grid.
@@ -271,7 +274,7 @@ class FPM_setup:
         kx = k0 * math.sin(radx)
         field = torch.exp(1j * kx * self.xygrid[1] + 1j * ky * self.xygrid[0])
         return field
-
+    
     def createFixedAngleIllumStack(self, illum_angle):
         """
         Create a stack of illumination fields for each wavelength at a fixed angle.
@@ -286,6 +289,28 @@ class FPM_setup:
         for k in np.arange(self.Nw):
             wv = self.wv[k]
             illumstack[k, :, :] = self.createIllumField(illum_angle, wv)
+        self.illumstack = illumstack
+        return self.illumstack
+    
+    def createCustomAngleWavelengthIllumStack(self, illum_angle, wv_inds):
+        """
+        Create an illumination stack for specific wavelength channels at a given angle.
+        This allows for selective wavelength illumination patterns.
+
+        Args:
+            illum_angle (tuple): The illumination angles (rady, radx).
+            wv_inds (tuple): Wavelength indices to illuminate.
+
+        Returns:
+            torch.Tensor: The illumination stack with fields only at specified wavelengths.
+            The stack has dimensions [Nw, Ny, Nx] where non-specified wavelength 
+            channels contain zeros.
+        """
+        illumstack = torch.zeros([self.Nw, self.Ny, self.Nx], dtype=torch.complex64)
+        for k in np.arange(self.Nw):
+            if k in wv_inds:
+                wv = self.wv[k]
+                illumstack[k, :, :] = self.createIllumField(illum_angle, wv)
         self.illumstack = illumstack
         return self.illumstack
 
@@ -354,6 +379,87 @@ class FPM_setup:
         led_pos = (led_ind[0] * self.led_spacing, led_ind[1] * self.led_spacing, self.dist)
         illum_angle = (np.arctan(led_pos[0] / led_pos[2]), np.arctan(led_pos[1] / led_pos[2]))
         return illum_angle
+    
+    def createSingleWavelengthPerAngleIllumList(self):
+        """
+        Create a list of illumination configurations where each angle uses a single wavelength.
+        The wavelengths cycle through the available channels using modulo arithmetic.
+        
+        For example, with 3 wavelengths:
+        - First angle uses wavelength 0
+        - Second angle uses wavelength 1 
+        - Third angle uses wavelength 2
+        - Fourth angle uses wavelength 0 again
+        And so on...
+
+        Returns:
+            list: List of tuples containing (illum_angle, wv_ind) pairs.
+            illum_angle is the illumination angle tuple (rady, radx)
+            wv_ind is a tuple containing the wavelength indices to use
+        """
+
+        self.list_illums = []
+        for k in np.arange(len(self.list_leds)):
+            illum_angle = self.led_ind_to_illum_angle(self.list_leds[k])
+            wv_ind = np.mod(k, self.Nw)  # Cycle through wavelengths
+            self.list_illums.append((illum_angle, (wv_ind)))
+        return self.list_illums
+    
+    def createMultiWavelengthPerAngleIllumList(self):
+        """
+        Create a list of illumination configurations where each angle is used for each wavelength.  
+        So that there are Nw*num_leds illumination configurations.
+
+        Returns:
+            list: List of tuples containing (illum_angle, wv_ind) pairs.
+            illum_angle is the illumination angle tuple (rady, radx)
+            wv_ind is a tuple containing the wavelength indices to use
+        """
+        self.list_illums = []
+        for k in np.arange(len(self.list_leds)):
+            illum_angle = self.led_ind_to_illum_angle(self.list_leds[k])
+            for wv_ind in np.arange(self.Nw):
+                self.list_illums.append((illum_angle, (wv_ind)))
+        return self.list_illums
+    
+    def createUniformWavelengthPerAngleIllumList(self):
+        """
+        Create a list of illumination configurations where each angle uses all wavelengths.
+
+        Returns:
+            list: List of tuples containing (illum_angle, wv_ind) pairs.
+            illum_angle is the illumination angle tuple (rady, radx)
+            wv_ind is a tuple containing the wavelength indices to use
+        """
+
+        self.list_illums = []
+        for k in np.arange(len(self.list_leds)):
+            illum_angle = self.led_ind_to_illum_angle(self.list_leds[k])
+            self.list_illums.append((illum_angle, tuple(np.arange(self.Nw))))
+        return self.list_illums
+
+    def createMeasStackFromListIllums(self):
+        """
+        Create a measurement stack by simulating measurements for each illumination 
+        configuration in list_illums.
+
+        Each configuration specifies which angle and wavelength(s) to use.
+        The forward model is applied to generate the expected measurement for
+        each configuration.
+
+        Returns:
+            torch.Tensor: Measurement stack with dimensions [num_measurements, Ny, Nx].
+            Each slice is the simulated measurement for one illumination configuration.
+        """
+        num_meas = len(self.list_illums)
+        measstack = torch.zeros(num_meas, self.Ny, self.Nx)
+        for k in np.arange(num_meas):
+            illum_angle, wv_ind = self.list_illums[k]
+            self.createCustomAngleWavelengthIllumStack(illum_angle, wv_ind)
+            (y, _) = self.forwardSFPM()
+            measstack[k, :, :] = y
+        self.measstack = measstack
+        return measstack
 
     def createRandomAngleMeasStack(self, list_leds=None, dist=None, led_spacing=None):
         """
@@ -395,6 +501,13 @@ class FPM_setup:
             measstack[k2, :, :] = y
         self.measstack = measstack
         return (measstack, self.list_leds)
+    
+    def createIllumStack(self, illum_angle, channels):
+        """
+        Create an illumstack for a given angle and wavelength channels.
+        Start with an illumstack of zeros, then fill in the appropriate illumination field for each wavelength.
+        Channels is a list of wavelength indices to use. 
+        """
 
 class Reconstruction:
     """
