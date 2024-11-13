@@ -5,6 +5,7 @@ from matplotlib import image
 import math
 import os
 from IPython import display  # for refreshing plotting
+import warnings
 
 # Global flag for plotting
 plot_flag = True
@@ -39,16 +40,16 @@ def preprocessObject(im):
     Returns:
         torch.Tensor: The preprocessed image tensor.
     """
-    (Ny, Nx) = im.shape
     # Make image square
-    if Ny < Nx:
-        im = im[:, :Ny]
-    elif Nx < Ny:
-        im = im[:Nx, :]
+    if im.shape[0] < im.shape[1]:
+        im = im[:, :im.shape[0]]
+    elif im.shape[1] < im.shape[0]:
+        im = im[:im.shape[1], :]
+        
     # Make dimensions even
-    if Ny % 2 != 0:
+    if im.shape[0] % 2 != 0:
         im = im[:-1, :]
-    if Nx % 2 != 0:
+    if im.shape[1] % 2 != 0:
         im = im[:, :-1]
 
     # Normalize to max value of 1
@@ -172,7 +173,7 @@ class FPM_setup:
         """
         Return a string representation of the FPM_setup object.
         """
-        return (
+        base_info = (
             f"FPM Setup Parameters:\n"
             f"--------------------\n"
             f"Camera pixel size: {self.pix_size_camera} microns\n"
@@ -184,9 +185,26 @@ class FPM_setup:
             f"Image dimensions: {self.Nx} x {self.Ny} pixels\n"
             f"LED Spacing: {self.led_spacing} mm\n"
             f"Distance: {self.dist} mm\n"
-            f"LED List: {self.list_leds}\n"
-            f"--------------------"
+            f"Total number of angles: {len(self.list_leds) if hasattr(self, 'list_leds') and self.list_leds is not None else 0}\n"
         )
+        
+        # Add information about illumination configurations
+        illum_info = ""
+        if hasattr(self, 'list_illums') and self.list_illums is not None:
+            illum_info += f"Number of illumination configurations: {len(self.list_illums)}\n"
+            illum_info += "Illumination strategy: "
+            # Try to identify the illumination strategy
+            if all(len(wv_ind) == self.Nw for _, wv_ind in self.list_illums):
+                illum_info += "Uniform (all wavelengths per angle)\n"
+            elif all(len(wv_ind) == 1 for _, wv_ind in self.list_illums):
+                if len(self.list_illums) == len(self.list_leds):
+                    illum_info += "Single wavelength per angle (cycling)\n"
+                else:
+                    illum_info += "Multi wavelength per angle\n"
+        elif hasattr(self, 'list_leds') and self.list_leds is not None:
+            illum_info += "Using legacy LED list\n"
+        
+        return base_info + illum_info + "--------------------"
 
     def makeUniformSpectralObject(self, obj=None):
         """
@@ -277,6 +295,7 @@ class FPM_setup:
     
     def createFixedAngleIllumStack(self, illum_angle):
         """
+        Deprecated: Use createCustomAngleWavelengthIllumStack instead.
         Create a stack of illumination fields for each wavelength at a fixed angle.
 
         Args:
@@ -285,6 +304,12 @@ class FPM_setup:
         Returns:
             torch.Tensor: The illumination stack.
         """
+        warnings.warn(
+            "createFixedAngleIllumStack is deprecated and will be removed in a future version. "
+            "Use createCustomAngleWavelengthIllumStack with all wavelength indices instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         illumstack = torch.zeros([self.Nw, self.Ny, self.Nx], dtype=torch.complex64)
         for k in np.arange(self.Nw):
             wv = self.wv[k]
@@ -334,11 +359,18 @@ class FPM_setup:
 
     def forwardFPM(self):
         """
-        Compute the measurement for a single wavelength.
+        Deprecated: Use forwardSFPM instead.
+        Compute the measurement for a 2D object and field.
 
         Returns:
             tuple: The measurement and pupil object.
         """
+        warnings.warn(
+            "forwardFPM is deprecated and will be removed in a future version. "
+            "Use forwardSFPM instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         obj_field = self.field * self.obj
         pup_obj = torch.fft.fftshift(torch.fft.fft2(obj_field)) * self.pupil
         y = torch.abs(torch.fft.ifft2(torch.fft.fftshift(pup_obj)))
@@ -380,7 +412,7 @@ class FPM_setup:
         illum_angle = (np.arctan(led_pos[0] / led_pos[2]), np.arctan(led_pos[1] / led_pos[2]))
         return illum_angle
     
-    def createSingleWavelengthPerAngleIllumList(self):
+    def createSingleWavelengthPerAngleIllumList(self, list_leds=None):
         """
         Create a list of illumination configurations where each angle uses a single wavelength.
         The wavelengths cycle through the available channels using modulo arithmetic.
@@ -397,7 +429,8 @@ class FPM_setup:
             illum_angle is the illumination angle tuple (rady, radx)
             wv_ind is a tuple containing the wavelength indices to use
         """
-
+        if list_leds is not None:
+            self.list_leds = list_leds
         self.list_illums = []
         for k in np.arange(len(self.list_leds)):
             illum_angle = self.led_ind_to_illum_angle(self.list_leds[k])
@@ -405,7 +438,7 @@ class FPM_setup:
             self.list_illums.append((illum_angle, (wv_ind)))
         return self.list_illums
     
-    def createMultiWavelengthPerAngleIllumList(self):
+    def createMultiWavelengthPerAngleIllumList(self, list_leds=None):
         """
         Create a list of illumination configurations where each angle is used for each wavelength.  
         So that there are Nw*num_leds illumination configurations.
@@ -415,6 +448,9 @@ class FPM_setup:
             illum_angle is the illumination angle tuple (rady, radx)
             wv_ind is a tuple containing the wavelength indices to use
         """
+        if list_leds is not None:
+            self.list_leds = list_leds
+            
         self.list_illums = []
         for k in np.arange(len(self.list_leds)):
             illum_angle = self.led_ind_to_illum_angle(self.list_leds[k])
@@ -422,7 +458,7 @@ class FPM_setup:
                 self.list_illums.append((illum_angle, (wv_ind)))
         return self.list_illums
     
-    def createUniformWavelengthPerAngleIllumList(self):
+    def createUniformWavelengthPerAngleIllumList(self, list_leds=None):
         """
         Create a list of illumination configurations where each angle uses all wavelengths.
 
@@ -433,12 +469,14 @@ class FPM_setup:
         """
 
         self.list_illums = []
+        if list_leds is not None:
+            self.list_leds = list_leds
         for k in np.arange(len(self.list_leds)):
             illum_angle = self.led_ind_to_illum_angle(self.list_leds[k])
             self.list_illums.append((illum_angle, tuple(np.arange(self.Nw))))
         return self.list_illums
 
-    def createMeasStackFromListIllums(self):
+    def createMeasStackFromListIllums(self, list_illums = None):
         """
         Create a measurement stack by simulating measurements for each illumination 
         configuration in list_illums.
@@ -451,18 +489,29 @@ class FPM_setup:
             torch.Tensor: Measurement stack with dimensions [num_measurements, Ny, Nx].
             Each slice is the simulated measurement for one illumination configuration.
         """
+        if list_illums is not None:
+            self.list_illums = list_illums
         num_meas = len(self.list_illums)
         measstack = torch.zeros(num_meas, self.Ny, self.Nx)
         for k in np.arange(num_meas):
             illum_angle, wv_ind = self.list_illums[k]
             self.createCustomAngleWavelengthIllumStack(illum_angle, wv_ind)
-            (y, _) = self.forwardSFPM()
+            (y,pup_obj) = self.forwardSFPM()
             measstack[k, :, :] = y
+            if k < 5 and plot_flag:
+                plt.figure(figsize=(10, 10))
+                plt.subplot(1, 4, 1)
+                plt.imshow(torch.log10(torch.abs(pup_obj)))
+                plt.subplot(1, 4, 2)
+                plt.imshow(y, 'gray')
+                plt.subplot(1, 4, 3)
+                plt.imshow(torch.log(torch.abs(torch.fft.fftshift(torch.fft.fft2(y)))))
         self.measstack = measstack
         return measstack
 
     def createRandomAngleMeasStack(self, list_leds=None, dist=None, led_spacing=None):
         """
+        Deprecated: Use createUniformWavelengthPerAngleIllumList followed by createMeasStackFromListIllums instead.
         Create a measurement stack with random illumination angles.
 
         Args:
@@ -473,6 +522,12 @@ class FPM_setup:
         Returns:
             tuple: The measurement stack and list of LEDs.
         """
+        warnings.warn(
+            "createRandomAngleMeasStack is deprecated and will be removed in a future version. "
+            "Use createUniformWavelengthPerAngleIllumList followed by createMeasStackFromListIllums instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.list_leds = list_leds
         if self.list_leds is None:
             raise ValueError("list_leds must be provided")
@@ -501,13 +556,6 @@ class FPM_setup:
             measstack[k2, :, :] = y
         self.measstack = measstack
         return (measstack, self.list_leds)
-    
-    def createIllumStack(self, illum_angle, channels):
-        """
-        Create an illumstack for a given angle and wavelength channels.
-        Start with an illumstack of zeros, then fill in the appropriate illumination field for each wavelength.
-        Channels is a list of wavelength indices to use. 
-        """
 
 class Reconstruction:
     """
@@ -538,14 +586,35 @@ class Reconstruction:
         """
         Return a string representation of the Reconstruction object.
         """
-        return (
+        # Basic reconstruction parameters
+        recon_info = (
             "Reconstruction Parameters:\n"
             + "-" * 20 + "\n"
             + f"Number of measurements: {self.num_meas}\n"
             + f"Device: {self.device}\n"
-            + "-" * 20 + "\n"
-            + str(self.fpm_setup)
         )
+        
+        # Optimization parameters if they've been set
+        opt_info = ""
+        if hasattr(self, 'step_size'):
+            opt_info += f"Step size: {self.step_size}\n"
+        if hasattr(self, 'num_iters'):
+            opt_info += f"Iterations per measurement: {self.num_iters}\n"
+        if hasattr(self, 'epochs'):
+            opt_info += f"Number of epochs: {self.epochs}\n"
+        if hasattr(self, 'optimizer'):
+            opt_info += f"Optimizer type: {type(self.optimizer).__name__}\n"
+        if hasattr(self, 'lossfunc'):
+            if isinstance(self.lossfunc, torch.nn.Module):
+                loss_name = type(self.lossfunc).__name__
+            else:
+                loss_name = "2-norm"
+            opt_info += f"Loss function: {loss_name}\n"
+        
+        # Add FPM setup information
+        setup_info = "-" * 20 + "\n" + str(self.fpm_setup)
+        
+        return recon_info + opt_info + setup_info
 
     def initRecon(self, obj=None):
         """
@@ -655,13 +724,23 @@ class Reconstruction:
                 self.fpm_setup.to(self.device)
 
             self.objest.requires_grad = True
-
+            
+        # check that self.num_meas and len(self.fpm_setup.list_illums) are the same if list_illums is not None  
+        if self.fpm_setup.list_illums is not None:
+            if self.num_meas != len(self.fpm_setup.list_illums):
+                raise ValueError("Number of measurements and list_illums must be the same")
+        
         for k3 in np.arange(self.epochs):
             for k2 in np.arange(self.num_meas):
                 meas = self.fpm_setup.measstack[k2, :, :].double().to(self.device)
-                led_ind = self.fpm_setup.list_leds[k2]
-                illum_angle = self.fpm_setup.led_ind_to_illum_angle(led_ind)
-                self.fpm_setup.createFixedAngleIllumStack(illum_angle)
+                try:
+                    illum_angle, wv_ind = self.fpm_setup.list_illums[k2]
+                    self.fpm_setup.createCustomAngleWavelengthIllumStack(illum_angle, wv_ind)
+                except: # backward compatibility for no list_illums
+                    led_ind = self.fpm_setup.list_leds[k2]
+                    illum_angle = self.fpm_setup.led_ind_to_illum_angle(led_ind)
+                    self.fpm_setup.createFixedAngleIllumStack(illum_angle)
+
                 self.fpm_setup.illumstack = self.fpm_setup.illumstack.to(self.device)
 
                 for k1 in np.arange(self.num_iters):
