@@ -348,12 +348,14 @@ class FPM_setup:
         """
         y = torch.zeros_like(self.objstack)
         for k in torch.arange(self.Nw):
-            obj = self.objstack[k]
-            pupil = self.pupilstack[k]
-            field = self.illumstack[k]
-            obj_field = field * obj
-            pup_obj = torch.fft.fftshift(torch.fft.fft2(obj_field), dim=(-1, -2)) * pupil
-            y[k] = torch.abs(torch.fft.ifft2(torch.fft.ifftshift(pup_obj, dim=(-1, -2))))
+            # if illumstack[k] is not all zeros, then use it
+            if not torch.all(self.illumstack[k] == 0):
+                obj = self.objstack[k]
+                pupil = self.pupilstack[k]
+                field = self.illumstack[k]
+                obj_field = field * obj
+                pup_obj = torch.fft.fftshift(torch.fft.fft2(obj_field), dim=(-1, -2)) * pupil
+                y[k,:,:] = torch.abs(torch.fft.ifft2(torch.fft.ifftshift(pup_obj, dim=(-1, -2))))
         y = torch.sum(y, 0)
         return (y, pup_obj)
 
@@ -435,7 +437,7 @@ class FPM_setup:
         for k in np.arange(len(self.list_leds)):
             illum_angle = self.led_ind_to_illum_angle(self.list_leds[k])
             wv_ind = np.mod(k, self.Nw)  # Cycle through wavelengths
-            self.list_illums.append((illum_angle, (wv_ind)))
+            self.list_illums.append((illum_angle, (wv_ind,)))  # Make wv_ind a tuple
         return self.list_illums
     
     def createMultiWavelengthPerAngleIllumList(self, list_leds=None):
@@ -455,7 +457,7 @@ class FPM_setup:
         for k in np.arange(len(self.list_leds)):
             illum_angle = self.led_ind_to_illum_angle(self.list_leds[k])
             for wv_ind in np.arange(self.Nw):
-                self.list_illums.append((illum_angle, (wv_ind)))
+                self.list_illums.append((illum_angle, (wv_ind,)))  # Add comma to make tuple
         return self.list_illums
     
     def createUniformWavelengthPerAngleIllumList(self, list_leds=None):
@@ -481,9 +483,9 @@ class FPM_setup:
         Create a measurement stack by simulating measurements for each illumination 
         configuration in list_illums.
 
-        Each configuration specifies which angle and wavelength(s) to use.
-        The forward model is applied to generate the expected measurement for
-        each configuration.
+        Args:
+            list_illums (list, optional): List of (illum_angle, wv_ind) pairs. If None, 
+                uses self.list_illums.
 
         Returns:
             torch.Tensor: Measurement stack with dimensions [num_measurements, Ny, Nx].
@@ -491,6 +493,9 @@ class FPM_setup:
         """
         if list_illums is not None:
             self.list_illums = list_illums
+        if self.list_illums is None:
+            raise ValueError("No illumination configurations provided. Call create*IllumList first.")
+        
         num_meas = len(self.list_illums)
         measstack = torch.zeros(num_meas, self.Ny, self.Nx)
         for k in np.arange(num_meas):
