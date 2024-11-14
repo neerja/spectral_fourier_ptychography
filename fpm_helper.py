@@ -234,7 +234,7 @@ class FPM_setup:
             wv (float): Wavelength.
 
         Returns:
-            torch.Tensor: The pupil stop.
+            torch.Tensor: The pupil stop.  with dtype torch.complex64
         """
         fPupilEdge = self.na_obj / wv  # Edge of pupil
         fMax = 1 / (2 * self.pix_size_object)
@@ -244,7 +244,7 @@ class FPM_setup:
         frc = np.sqrt(fxc**2 + fyc**2)  # Radius of f coordinates
         pupil = np.zeros_like(frc)
         pupil[torch.Tensor(frc) < fPupilEdge] = 1  # Transmit 100% inside edge
-        return torch.Tensor(pupil)
+        return torch.Tensor(pupil, dtype=torch.complex64)
 
     def createPupilStack(self):
         """
@@ -347,6 +347,7 @@ class FPM_setup:
             tuple: The measurement and pupil object.
         """
         y = torch.zeros_like(self.objstack)
+        pup_obj = torch.zeros_like(self.objstack, dtype=torch.complex64)
         for k in torch.arange(self.Nw):
             # if illumstack[k] is not all zeros, then use it
             if not torch.all(self.illumstack[k] == 0):
@@ -354,9 +355,10 @@ class FPM_setup:
                 pupil = self.pupilstack[k]
                 field = self.illumstack[k]
                 obj_field = field * obj
-                pup_obj = torch.fft.fftshift(torch.fft.fft2(obj_field), dim=(-1, -2)) * pupil
-                y[k,:,:] = torch.abs(torch.fft.ifft2(torch.fft.ifftshift(pup_obj, dim=(-1, -2))))
-        y = torch.sum(y, 0)
+                pup_obj[k,:,:] = torch.fft.fftshift(torch.fft.fft2(obj_field), dim=(-1, -2)) * pupil
+                y[k,:,:] = torch.abs(torch.fft.ifft2(torch.fft.ifftshift(pup_obj[k,:,:], dim=(-1, -2))))
+        y = torch.sum(y, 0) # sum over wavelengths
+        pup_obj = torch.sum(pup_obj, 0) # sum over wavelengths
         return (y, pup_obj)
 
     def forwardFPM(self):
@@ -561,6 +563,152 @@ class FPM_setup:
             measstack[k2, :, :] = y
         self.measstack = measstack
         return (measstack, self.list_leds)
+
+    def createTile(self, Nw=None):
+        """
+        Create a tile pattern for the aperture.
+
+        Args:
+            Nw (int, optional): Number of wavelength channels. If None, uses self.Nw.
+
+        Returns:
+            numpy.ndarray: Tile pattern with values from 1 to Nw.
+        """
+        if Nw is None:
+            Nw = self.Nw
+        a = np.arange(1, Nw+1)  # get vector from 1 to Nw
+        s = np.ceil(np.sqrt(Nw)).astype(int)  # compute sqrt and round up
+        a = np.resize(a, (s, s))  # reshape into square matrix
+        return a
+
+    def createAperture(self, tile=None):
+        """
+        Create an aperture stack where each wavelength has its own region in k-space.
+        
+        Args:
+            tile (numpy.ndarray, optional): Tile pattern to use. If None, creates default tile.
+
+        Returns:
+            torch.Tensor: Aperture stack with shape [Nw, Ny, Nx].
+            Each slice contains binary mask for that wavelength's allowed k-space region.
+        """
+        if tile is None:
+            tile = self.createTile()
+        
+        aperture_stack = torch.zeros([self.Nw, self.Ny, self.Nx])
+        
+        for k in range(self.Nw):
+            wv = self.wv[k]
+            # Calculate frequency space parameters
+            df = 1/(self.Ny * self.pix_size_object)
+            f_width = self.na_obj/wv * np.sqrt(2)  # side of largest square that fits in circle pupil
+            f_width_ind = int(torch.floor(torch.tensor(f_width/df)))  # Convert to PyTorch operation
+            
+            # Scale tile to pupil size
+            mul_factor = int(f_width_ind/tile.shape[0])  # assume square aperture
+            aperture = np.repeat(np.repeat(tile, mul_factor, axis=0), mul_factor, axis=1)
+            
+            # Pad to full size
+            pady = int((self.Ny-f_width_ind)/2) + 1
+            padx = int((self.Nx-f_width_ind)/2) + 1
+            aperture = np.pad(aperture, ((pady, pady), (padx, padx)))
+            aperture = aperture[0:self.Ny, 0:self.Nx]
+            
+            # Create binary mask for this wavelength
+            frame = np.zeros((self.Ny, self.Nx))
+            frame[np.where(aperture == k+1)] = 1
+            aperture_stack[k, :, :] = torch.tensor(frame)
+        self.aperture = aperture
+        self.aperture_stack = aperture_stack
+        return aperture_stack
+
+    def visualize_pupil_aperture(self, wavelength_index=None):
+        """
+        Visualize the pupil and aperture configuration.
+        
+        Args:
+            wavelength_index (int, optional): Index of wavelength to visualize. 
+                If None, shows sum across all wavelengths.
+        """
+        if not hasattr(self, 'aperture_stack'):
+            raise ValueError("No aperture stack found. Call createAperture first.")
+        
+        plt.figure(figsize=(15, 4))
+        
+        if wavelength_index is not None:
+            # Show pupil
+            plt.subplot(131)
+            plt.imshow(self.pupilstack[wavelength_index])
+            plt.title(f'Pupil for λ = {int(self.wv[wavelength_index]*1000)}nm')
+            plt.colorbar()
+            plt.xlabel('kx')
+            plt.ylabel('ky')
+            
+            # Show aperture
+            plt.subplot(132)
+            plt.imshow(self.aperture_stack[wavelength_index])
+            plt.title(f'Aperture for λ = {int(self.wv[wavelength_index]*1000)}nm')
+            plt.colorbar()
+            plt.xlabel('kx')
+            plt.ylabel('ky')
+            
+            # Show combination
+            plt.subplot(133)
+            plt.imshow(self.pupilstack[wavelength_index] + self.aperture_stack[wavelength_index])
+            plt.title('Pupil + Aperture')
+            plt.colorbar()
+            plt.xlabel('kx')
+            plt.ylabel('ky')
+        else:
+            # Show sum of pupils
+            plt.subplot(131)
+            plt.imshow(torch.sum(self.pupilstack, axis=0))
+            plt.title('Sum of all pupils')
+            plt.colorbar()
+            plt.xlabel('kx')
+            plt.ylabel('ky')
+            
+            # Show sum of apertures
+            plt.subplot(132)
+            plt.imshow(torch.sum(self.aperture_stack, axis=0))
+            plt.title('Sum of all apertures')
+            plt.colorbar()
+            plt.xlabel('kx')
+            plt.ylabel('ky')
+            
+            # Show sum of combination
+            plt.subplot(133)
+            k=-1
+            plt.imshow(self.pupilstack[k,:,:]+self.aperture)
+            plt.xlabel('k_x')
+            plt.ylabel('k_y')
+            plt.title('wv = ' + str(int(self.wv[k]*1000)) + "nm")
+        
+
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def updatePupilWithAperture(self):
+        """
+        Update the pupil stack to include the aperture.
+
+        Returns:
+            torch.Tensor: Updated pupil stack.
+        """
+        self.pupilstack = self.aperture_stack.clone()
+        return self.pupilstack
+    
+    def resetPupil(self):
+        """
+        Reset the pupil stack to the original pupil stack.
+        Uses createPupilStack() to reset.
+        
+        Returns:
+            torch.Tensor: Reset pupil stack.
+        """
+        self.pupilstack = self.createPupilStack()
+        return self.pupilstack
 
 class Reconstruction:
     """
