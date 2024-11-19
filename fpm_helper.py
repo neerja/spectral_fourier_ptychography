@@ -73,7 +73,8 @@ def createlist_led(num_leds=100, minval=-3, maxval=3):
     # Append a (0,0) LED for brightfield
     list_leds = np.append(list_leds, np.zeros([1, 2]), axis=0)
     # Sort the list of LEDs by distance from origin
-    list_leds = list_leds[np.argsort(np.linalg.norm(list_leds, axis=1))]
+    # important for reconstruction (start with brightest LEDs)
+    list_leds = list_leds[np.argsort(np.linalg.norm(list_leds, axis=1))] 
     return list_leds
 
 class FPM_setup:
@@ -234,7 +235,7 @@ class FPM_setup:
             wv (float): Wavelength.
 
         Returns:
-            torch.Tensor: The pupil stop.  with dtype torch.complex64
+            torch.Tensor: The pupil stop with dtype torch.complex64
         """
         fPupilEdge = self.na_obj / wv  # Edge of pupil
         fMax = 1 / (2 * self.pix_size_object)
@@ -244,7 +245,8 @@ class FPM_setup:
         frc = np.sqrt(fxc**2 + fyc**2)  # Radius of f coordinates
         pupil = np.zeros_like(frc)
         pupil[torch.Tensor(frc) < fPupilEdge] = 1  # Transmit 100% inside edge
-        return torch.Tensor(pupil, dtype=torch.complex64)
+        # Convert to complex tensor correctly
+        return torch.tensor(pupil, dtype=torch.complex64)
 
     def createPupilStack(self):
         """
@@ -290,7 +292,7 @@ class FPM_setup:
         k0 = 2 * math.pi / torch.Tensor(wv)
         ky = k0 * math.sin(rady)
         kx = k0 * math.sin(radx)
-        field = torch.exp(1j * kx * self.xygrid[1] + 1j * ky * self.xygrid[0])
+        field = torch.exp(1j * kx * self.xygrid[1] + 1j * ky * self.xygrid[0]) # not accounting for phase shift due to z
         return field
     
     def createFixedAngleIllumStack(self, illum_angle):
@@ -360,6 +362,20 @@ class FPM_setup:
         y = torch.sum(y, 0) # sum over wavelengths
         pup_obj = torch.sum(pup_obj, 0) # sum over wavelengths
         return (y, pup_obj)
+
+    def computeFourierShift_fromAngle(self, angle, wv, pupil):
+        """
+        Compute the Fourier shift from an angle.
+        """
+        rady = angle[0]
+        radx = angle[1]
+        k0 = 2 * math.pi / torch.Tensor(wv)
+        ky = k0 * math.sin(rady)
+        kx = k0 * math.sin(radx)
+        # shift the pupil by ky, kx
+        pupil = torch.roll(pupil, int(ky), dims=0)
+        pupil = torch.roll(pupil, int(kx), dims=1)
+        return pupil
 
     def forwardFPM(self):
         """
@@ -552,13 +568,18 @@ class FPM_setup:
             self.createFixedAngleIllumStack(illum_angle)
             (y, pup_obj) = self.forwardSFPM()
 
-            if k2 < 5 and plot_flag:
+            if k2 < 5 or k2 == num_meas-1 and plot_flag:
                 plt.figure(figsize=(10, 10))
+                #add title onto whole figure
+                plt.suptitle(f'Meas Index = {k2}')
                 plt.subplot(1, 4, 1)
+                plt.title('Pupil')  
                 plt.imshow(torch.log10(torch.abs(pup_obj)))
                 plt.subplot(1, 4, 2)
+                plt.title('Measurement')
                 plt.imshow(y, 'gray')
                 plt.subplot(1, 4, 3)
+                plt.title('Meas FFT')
                 plt.imshow(torch.log(torch.abs(torch.fft.fftshift(torch.fft.fft2(y)))))
             measstack[k2, :, :] = y
         self.measstack = measstack
@@ -709,6 +730,58 @@ class FPM_setup:
         """
         self.pupilstack = self.createPupilStack()
         return self.pupilstack
+
+    def visualize_objectfft_coverage(self, list_illums= None):
+        """
+        Visualize the coverage of the object in k-space.
+        """
+
+        if list_illums is None:
+            list_illums = self.list_illums
+        coverage = torch.zeros(self.Nw, self.Ny, self.Nx)
+        df = 1 / (self.Npixel * self.pix_size_object) # assumes square pixels & square object
+
+        # For each illumination angle create pupil circle for each wavelength
+        for illum_angle, wv_inds in list_illums:
+            for wvind in wv_inds:
+                fy = illum_angle[0] /torch.Tensor(self.wv[wvind]) 
+                fx = illum_angle[1] /torch.Tensor(self.wv[wvind])
+                # convert to indexes
+                indx = - int(fx / df) # flip sign so that pupil shifts to left and up for positive angles (DC point moves right and down)
+                indy = - int(fy / df)
+
+                # Create circle mask centered at fx, fy
+                # get aperture from pupilstack and then shift it to the correct coordinates
+                pupil = self.pupilstack[wvind, :, :]
+                pupil = torch.roll(pupil, shifts=(int(indy), int(indx)), dims=(0, 1))  # pos angle means shift aperture to left and up
+                
+                # Set wrapped regions to zero
+                if indx > 0:   # if shift to right, then set left side to zero
+                    pupil[:, :indx] = 0
+                elif indx < 0: # if shift to left, then set right side to zero
+                    pupil[:, indx:] = 0
+                if indy > 0:   # if shift down, then set top side to zero
+                    pupil[:indy, :] = 0
+                elif indy < 0: # if shift up, then set bottom side to zero
+                    pupil[indy:, :] = 0
+
+                # Add circle to coverage for this wavelength
+                coverage[wvind] += pupil
+        return coverage
+
+        # Plot coverage for each wavelength
+        plt.figure(figsize=(4*self.Nw, 4))
+        for w in range(self.Nw):
+            plt.subplot(1, self.Nw, w+1)
+            plt.imshow(coverage[w].cpu())
+            plt.title(f'λ = {self.wv[w]*1000:.0f}nm')
+            plt.colorbar()
+            plt.xlabel('kx')
+            plt.ylabel('ky')
+        plt.tight_layout()
+        plt.show()
+
+        
 
 class Reconstruction:
     """
@@ -953,7 +1026,10 @@ def debug_plot(obj):
     Args:
         obj (torch.Tensor): The object tensor.
     """
-    plt.imshow(np.abs(np.sum(obj.detach().cpu().numpy(), axis=0)))
+    if obj.ndim == 3:
+        plt.imshow(np.abs(np.sum(obj.detach().cpu().numpy(), axis=0)))
+    else:
+        plt.imshow(np.abs(obj.detach().cpu().numpy()))
     plt.colorbar()
     plt.show()
 
