@@ -7,6 +7,8 @@ import os
 from IPython import display  # for refreshing plotting
 import warnings
 
+import wandb
+
 # Global flag for plotting
 plot_flag = True
 
@@ -77,6 +79,39 @@ def createlist_led(num_leds=100, minval=-3, maxval=3):
     list_leds = list_leds[np.argsort(np.linalg.norm(list_leds, axis=1))] 
     return list_leds
 
+def create_spiral_leds(num_leds=100, minval=-3, maxval=3, alpha=0.1):
+    """
+    Create a spiral pattern of LEDs starting from the center (0,0) and spiraling outward
+    with consistent spacing between LEDs.
+
+    Args:
+        num_leds (int): Number of LEDs. Defaults to 100.
+        minval (float): Minimum value for LED positions. Defaults to -3.
+        maxval (float): Maximum value for LED positions. Defaults to 3.
+
+    Returns:
+        np.ndarray: Array of LED positions in a spiral pattern.
+    """
+    # Calculate the maximum radius
+    max_radius = maxval
+
+    # Create a linear space for the radius
+    radius = np.linspace(0, max_radius, num_leds)
+
+    # Use a logarithmic spiral to maintain consistent spacing
+    # Adjust this parameter to control the tightness of the spiral
+    theta = alpha * np.log(1 + radius)
+
+    # Convert polar coordinates to Cartesian coordinates
+    x = radius * np.cos(theta)
+    y = radius * np.sin(theta)
+
+    # Combine x and y into a single array
+    list_leds = np.vstack((x, y)).T
+
+    return list_leds
+    
+
 class FPM_setup:
     """
     Class to set up the Fourier Ptychographic Microscopy (FPM) system.  
@@ -99,6 +134,7 @@ class FPM_setup:
             dist (float): Distance from sample to LED in mm.
             list_leds (list): List of LED positions.
         """
+        self.device = torch.device('cpu')
         # Initialize camera pixel size
         if pix_size_camera is None:
             self.pix_size_camera = 4  # Default to 4 microns
@@ -338,7 +374,7 @@ class FPM_setup:
             if k in wv_inds:
                 wv = self.wv[k]
                 illumstack[k, :, :] = self.createIllumField(illum_angle, wv)
-        self.illumstack = illumstack
+        self.illumstack = illumstack.to(self.device)
         return self.illumstack
 
     def forwardSFPM(self):
@@ -417,6 +453,7 @@ class FPM_setup:
             self.illumstack = self.illumstack.to(device)
         if hasattr(self, 'objstack'):
             self.objstack = self.objstack.to(device)
+        self.device = device
 
     def led_ind_to_illum_angle(self, led_ind):
         """
@@ -515,20 +552,21 @@ class FPM_setup:
             raise ValueError("No illumination configurations provided. Call create*IllumList first.")
         
         num_meas = len(self.list_illums)
-        measstack = torch.zeros(num_meas, self.Ny, self.Nx)
+        measstack = torch.zeros(num_meas, self.Ny, self.Nx, device=self.device)
         for k in np.arange(num_meas):
             illum_angle, wv_ind = self.list_illums[k]
             self.createCustomAngleWavelengthIllumStack(illum_angle, wv_ind)
+            self.illumstack = self.illumstack.to(self.device)
             (y,pup_obj) = self.forwardSFPM()
             measstack[k, :, :] = y
             if k < 5 and plot_flag:
                 plt.figure(figsize=(10, 10))
                 plt.subplot(1, 4, 1)
-                plt.imshow(torch.log10(torch.abs(pup_obj)))
+                plt.imshow(torch.log10(torch.abs(pup_obj.detach().cpu())))
                 plt.subplot(1, 4, 2)
-                plt.imshow(y, 'gray')
+                plt.imshow(y.cpu(), 'gray')
                 plt.subplot(1, 4, 3)
-                plt.imshow(torch.log(torch.abs(torch.fft.fftshift(torch.fft.fft2(y)))))
+                plt.imshow(torch.log(torch.abs(torch.fft.fftshift(torch.fft.fft2(y.detach().cpu())))))
         self.measstack = measstack
         return measstack
 
@@ -738,7 +776,7 @@ class FPM_setup:
 
         if list_illums is None:
             list_illums = self.list_illums
-        coverage = torch.zeros(self.Nw, self.Ny, self.Nx)
+        coverage = torch.zeros(self.Nw, self.Ny, self.Nx, device=self.device)
         df = 1 / (self.Npixel * self.pix_size_object) # assumes square pixels & square object
 
         # For each illumination angle create pupil circle for each wavelength
@@ -769,19 +807,6 @@ class FPM_setup:
                 coverage[wvind] += pupil
         return coverage
 
-        # Plot coverage for each wavelength
-        plt.figure(figsize=(4*self.Nw, 4))
-        for w in range(self.Nw):
-            plt.subplot(1, self.Nw, w+1)
-            plt.imshow(coverage[w].cpu())
-            plt.title(f'λ = {self.wv[w]*1000:.0f}nm')
-            plt.colorbar()
-            plt.xlabel('kx')
-            plt.ylabel('ky')
-        plt.tight_layout()
-        plt.show()
-
-        
 
 class Reconstruction:
     """
@@ -807,6 +832,7 @@ class Reconstruction:
         self.objest = None
         self.device = use_gpu(device)
         self.initRecon()
+        self.wandb_active = False
 
     def __str__(self):
         """
@@ -943,6 +969,8 @@ class Reconstruction:
         """
         Train the object estimate using the specified parameters.
         """
+        self.wandb_init()
+
         if self.device.type == 'cuda':
             with torch.no_grad():
                 self.objest = self.objest.to(self.device)
@@ -978,12 +1006,16 @@ class Reconstruction:
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
+                    self.wandb_logloss()
+
                     if k1 == self.num_iters - 1:
                         try:
                             print(k3, k2, k1)
                             self.visualize(k1, k2, k3)
+                            self.wandb_logplots(k1, k2, k3)
                         except KeyboardInterrupt:
                             break
+        self.wandb_finish()
 
     def visualize(self, k1, k2, k3):
         """
@@ -1018,6 +1050,112 @@ class Reconstruction:
         display.display(loss_fig)
         display.display(fig)
         display.clear_output(wait=True)
+
+    def wandb_init(self):
+        """
+        Initialize wandb logging and log important reconstruction parameters.
+        """
+        self.wandb_active = True
+        wandb.init(project="Spectral_FPM", config={
+            "learning_rate": self.step_size,
+            "num_iters": self.num_iters,
+            "epochs": self.epochs,
+            "opt_type": type(self.optimizer).__name__,
+            "loss_function": type(self.lossfunc).__name__ if isinstance(self.lossfunc, torch.nn.Module) else "2-norm",
+            "device": str(self.device),
+            "num_measurements": self.num_meas,
+            "fpm_setup_info": str(self.fpm_setup)
+        })
+        
+        # log the led plot
+        fig, ax = plt.subplots(figsize=(6, 6))  # Use plt.subplots to create figure and axes
+        ax.scatter(self.fpm_setup.list_leds[:, 1], self.fpm_setup.list_leds[:, 0])  # Use ax.scatter for plotting
+        ax.set_aspect('equal', 'box')  # Set axis to square
+        ax.set_title('LED Locations')
+        ax.set_xlabel('x')
+        ax.set_ylabel('y')
+        if self.wandb_active:
+            wandb.log({"LED Plot": wandb.Image(fig)})  # Pass the figure object to wandb.Image
+        plt.close(fig)
+
+        # look at the coverage
+        coverage = self.fpm_setup.visualize_objectfft_coverage(self.fpm_setup.list_illums)
+        # Create a subplot for all wavelengths
+        fig, axes = plt.subplots(1, self.fpm_setup.Nw, figsize=(4 * self.fpm_setup.Nw, 4))
+        for wvind in range(self.fpm_setup.Nw):
+            ax = axes[wvind]
+            ax.imshow(coverage[wvind].cpu())
+            ax.set_title(f'Fourier Coverage for wavelength {self.fpm_setup.wv[wvind] * 1000:.0f} nm')
+            ax.set_xlabel('kx')
+            ax.set_ylabel('ky')
+            plt.colorbar(ax.imshow(coverage[wvind].cpu()))
+        plt.tight_layout()
+        plt.show()
+        # Log the figure to wandb
+        if self.wandb_active:
+            wandb.log({"Fourier Coverage Plot": wandb.Image(fig)})
+        plt.close(fig)
+            
+    def wandb_logloss(self):
+        """
+        Log the loss to wandb.
+        """
+        wandb.log({"Loss": self.losses[-1]})
+
+    def wandb_logplots(self, k1, k2, k3):
+        """
+        Log the object estimate, its zoomed central region, and its FFT to wandb.
+        """
+        obj2d = np.sum(self.objest.detach().cpu().numpy(), axis=0)
+        fig = self.plot_object_estimate(obj2d)
+        wandb.log({"XY Object Estimate": wandb.Image(fig)})
+        plt.close(fig)
+
+    def wandb_finish(self):
+        """
+        Finish wandb logging.
+        """
+        for k in range(self.Nw):
+            fig = self.plot_object_estimate(self.objest.detach().cpu().numpy()[k,:,:])
+            wandb.log({"Final Recon for Wavelength {}".format(k): wandb.Image(fig)})
+            plt.close(fig)
+        wandb.finish()
+
+    def plot_object_estimate(self, obj2d):
+        """
+        Plot the object estimate, its zoomed central region, and its FFT.
+
+        Args:
+            obj2d (torch.Tensor): The 2D object estimate.
+        """
+        # Create a figure with three subplots
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
+
+        # Full image
+        ax1.imshow(obj2d, cmap='gray')
+        ax1.set_title('Full Recon Image')
+        plt.colorbar(ax1.imshow(obj2d, cmap='gray'))
+        
+        # Zoomed central region
+        center_y, center_x = obj2d.shape[0] // 2, obj2d.shape[1] // 2
+        zoom_size = 200  # Adjust this value to change zoom level
+        zoom_region = obj2d[center_y - zoom_size // 2:center_y + zoom_size // 2,
+                            center_x - zoom_size // 2:center_x + zoom_size // 2]
+        im2 = ax2.imshow(zoom_region, cmap='gray')
+        ax2.set_title('Zoomed Central Region')
+        fig.colorbar(im2, ax=ax2)
+
+        # FFT of the object estimate
+        fftobj2d = np.fft.fftshift(np.fft.fft2(obj2d))
+        im3 = ax3.imshow(np.log(np.abs(fftobj2d)), cmap='viridis')
+        ax3.set_title('FFT of Object 2D Estimate')
+        fig.colorbar(im3, ax=ax3)
+
+        plt.tight_layout()
+        # plt.show()
+
+        return fig
+        
 
 def debug_plot(obj): 
     """
