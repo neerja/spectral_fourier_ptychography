@@ -1106,6 +1106,7 @@ class Reconstruction:
             "num_measurements": self.num_meas,
             "fpm_setup_info": str(self.fpm_setup),
         })
+        self.wandb_run_id = wandb.run.id
         
         # log the led plot
         fig, ax = plt.subplots(figsize=(6, 6))  # Use plt.subplots to create figure and axes
@@ -1272,7 +1273,7 @@ class SparseReconstruction(Reconstruction):
         wandb.log({"tau_reg": self.tau_reg})
 
 
-def save_simulation_results(fpm_setup, recon, save_dir, run_name):
+def save_simulation_results(fpm_setup, recon, save_path):
     """
     Save the simulation results to disk.
     
@@ -1282,13 +1283,6 @@ def save_simulation_results(fpm_setup, recon, save_dir, run_name):
         save_dir (str): Directory to save results
         run_name (str): Name of the run
     """ 
-
-    # get wandb run id
-    run_id = recon.wandb.run.id
-    save_path = Path(save_dir,run_name, run_id)
-    save_path.mkdir(parents=True, exist_ok=True)
-    
-
     # Save reconstructed object
     obj2d = np.sum(recon.objest.detach().cpu().numpy(), axis=0)
     np.save(save_path / 'reconstructed_object.npy', obj2d)

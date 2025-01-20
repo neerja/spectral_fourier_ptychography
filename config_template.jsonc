@@ -34,6 +34,6 @@
         "plot_interval": 10,
         "save_dir": "results",
         "run_name": "test_run",
-        "visualize": true
+        "visualize": false
     }
 }
