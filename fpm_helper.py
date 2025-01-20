@@ -6,8 +6,11 @@ import math
 import os
 from IPython import display  # for refreshing plotting
 import warnings
+import json
+from pathlib import Path
 
 import wandb
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # Global flag for plotting
 plot_flag = True
@@ -567,6 +570,9 @@ class FPM_setup:
                 plt.imshow(y.cpu(), 'gray')
                 plt.subplot(1, 4, 3)
                 plt.imshow(torch.log(torch.abs(torch.fft.fftshift(torch.fft.fft2(y.detach().cpu())))))
+                plt.draw()
+                plt.pause(0.1)
+                plt.show(block=False) # keep plot open in the background
         self.measstack = measstack
         return measstack
 
@@ -830,7 +836,7 @@ class Reconstruction:
             self.fpm_setup.measstack = measstack
         self.num_meas = len(self.fpm_setup.measstack)
         self.objest = None
-        self.device = use_gpu(device)
+        self.device = device
         self.initRecon()
         self.wandb_active = False
 
@@ -942,12 +948,13 @@ class Reconstruction:
             callable: The loss function.
         """
         if loss_type == 'MSE':
-            self.lossfunc = torch.nn.MSELoss()
+            self.lossfunc = lambda yest, meas, **kwargs: torch.nn.MSELoss(yest - meas)
         elif loss_type == '2-norm':
-            self.lossfunc = lambda yest, meas: torch.norm(yest - meas)
+            self.lossfunc = lambda yest, meas, **kwargs: torch.norm(yest - meas)
         else:
             raise ValueError("Loss type not recognized")
         return self.lossfunc
+
 
     def set_optimizer(self, opt_type):
         """
@@ -965,7 +972,7 @@ class Reconstruction:
             raise ValueError("Optimizer type not recognized")
         return self.optimizer
 
-    def train(self):
+    def train(self, visualize=True):
         """
         Train the object estimate using the specified parameters.
         """
@@ -1005,17 +1012,20 @@ class Reconstruction:
                     error.backward()
                     self.optimizer.step()
                     self.optimizer.zero_grad()
-
-                    self.wandb_logloss()
+                    if self.wandb_active:
+                        self.wandb_logloss()
 
                     if k1 == self.num_iters - 1:
                         try:
                             print(k3, k2, k1)
-                            self.visualize(k1, k2, k3)
-                            self.wandb_logplots(k1, k2, k3)
+                            if visualize:
+                                self.visualize(k1, k2, k3)
+                            if self.wandb_active:
+                                self.wandb_logplots()
                         except KeyboardInterrupt:
                             break
-        self.wandb_finish()
+        if self.wandb_active:
+            self.wandb_finish()
 
     def visualize(self, k1, k2, k3):
         """
@@ -1028,28 +1038,49 @@ class Reconstruction:
         """
         plt.close('all')
 
-        loss_fig, ax_loss = plt.subplots(figsize=(8, 6))
+        # Loss plot
+        loss_fig = plt.figure(figsize=(8, 6))
+        ax_loss = loss_fig.add_subplot(111)
         ax_loss.semilogy(self.losses)
         ax_loss.set_title('Loss over time')
         ax_loss.set_xlabel('Iteration')
         ax_loss.set_ylabel('Loss')
+        
+        # Draw and show loss plot
+        loss_fig.tight_layout()
+        plt.draw()
+        plt.pause(0.1)
+        plt.show(block=False)
 
-        fig, (ax_obj, ax_fft) = plt.subplots(1, 2, figsize=(16, 6))
+        # Object and FFT plot
+        fig = plt.figure(figsize=(16, 6))
+        
+        # Object subplot
+        ax_obj = fig.add_subplot(121)
         obj2d = np.sum(self.objest.detach().cpu().numpy(), axis=0)
         im_obj = ax_obj.imshow(obj2d, cmap='gray')
-        ax_obj.set_title('Object 2D Estimate after Epoch {} Meas {} Iter {}'.format(k3+1, k2+1, k1+1))
-        fig.colorbar(im_obj, ax=ax_obj, orientation='vertical')
+        ax_obj.set_title(f'Object 2D Estimate after Epoch {k3+1} Meas {k2+1} Iter {k1+1}')
+        plt.colorbar(im_obj, ax=ax_obj, orientation='vertical')
 
+        # FFT subplot
+        ax_fft = fig.add_subplot(122)
         fftobj2d = np.fft.fftshift(np.fft.fft2(obj2d))
         im_fft = ax_fft.imshow(np.log(np.abs(fftobj2d)), cmap='viridis')
         ax_fft.set_title('FFT of Object 2D Estimate')
-        fig.colorbar(im_fft, ax=ax_fft, orientation='vertical')
+        plt.colorbar(im_fft, ax=ax_fft, orientation='vertical')
 
+        # Save figure
         fig.savefig('object_estimate_fft.png', bbox_inches='tight')
-
-        display.display(loss_fig)
-        display.display(fig)
-        display.clear_output(wait=True)
+        
+        # Draw and show object/FFT plot
+        fig.tight_layout()
+        plt.draw()
+        plt.pause(0.1)
+        plt.show(block=False)
+        
+        # Clean up
+        plt.close(loss_fig)
+        plt.close(fig)
 
     def wandb_init(self):
         """
@@ -1064,7 +1095,8 @@ class Reconstruction:
             "loss_function": type(self.lossfunc).__name__ if isinstance(self.lossfunc, torch.nn.Module) else "2-norm",
             "device": str(self.device),
             "num_measurements": self.num_meas,
-            "fpm_setup_info": str(self.fpm_setup)
+            "fpm_setup_info": str(self.fpm_setup),
+            "run_name": self.run_name
         })
         
         # log the led plot
@@ -1083,12 +1115,20 @@ class Reconstruction:
         # Create a subplot for all wavelengths
         fig, axes = plt.subplots(1, self.fpm_setup.Nw, figsize=(4 * self.fpm_setup.Nw, 4))
         for wvind in range(self.fpm_setup.Nw):
-            ax = axes[wvind]
-            ax.imshow(coverage[wvind].cpu())
+            if self.fpm_setup.Nw == 1:
+                ax = axes
+            else:
+                ax = axes[wvind]
+            im = ax.imshow(coverage[wvind].cpu())
             ax.set_title(f'Fourier Coverage for wavelength {self.fpm_setup.wv[wvind] * 1000:.0f} nm')
             ax.set_xlabel('kx')
             ax.set_ylabel('ky')
-            plt.colorbar(ax.imshow(coverage[wvind].cpu()))
+            
+            # Adjust colorbar height
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+
         plt.tight_layout()
         plt.show()
         # Log the figure to wandb
@@ -1102,7 +1142,7 @@ class Reconstruction:
         """
         wandb.log({"Loss": self.losses[-1]})
 
-    def wandb_logplots(self, k1, k2, k3):
+    def wandb_logplots(self):
         """
         Log the object estimate, its zoomed central region, and its FFT to wandb.
         """
@@ -1132,9 +1172,12 @@ class Reconstruction:
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
 
         # Full image
-        ax1.imshow(obj2d, cmap='gray')
+        im1 = ax1.imshow(obj2d, cmap='gray')
         ax1.set_title('Full Recon Image')
-        plt.colorbar(ax1.imshow(obj2d, cmap='gray'))
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        divider1 = make_axes_locatable(ax1)
+        cax1 = divider1.append_axes("right", size="5%", pad=0.05)
+        fig.colorbar(im1, cax=cax1)
         
         # Zoomed central region
         center_y, center_x = obj2d.shape[0] // 2, obj2d.shape[1] // 2
@@ -1143,13 +1186,17 @@ class Reconstruction:
                             center_x - zoom_size // 2:center_x + zoom_size // 2]
         im2 = ax2.imshow(zoom_region, cmap='gray')
         ax2.set_title('Zoomed Central Region')
-        fig.colorbar(im2, ax=ax2)
+        divider2 = make_axes_locatable(ax2)
+        cax2 = divider2.append_axes("right", size="5%", pad=0.05)
+        fig.colorbar(im2, cax=cax2)
 
         # FFT of the object estimate
         fftobj2d = np.fft.fftshift(np.fft.fft2(obj2d))
         im3 = ax3.imshow(np.log(np.abs(fftobj2d)), cmap='viridis')
         ax3.set_title('FFT of Object 2D Estimate')
-        fig.colorbar(im3, ax=ax3)
+        divider3 = make_axes_locatable(ax3)
+        cax3 = divider3.append_axes("right", size="5%", pad=0.05)
+        fig.colorbar(im3, cax=cax3)
 
         plt.tight_layout()
         # plt.show()
@@ -1171,3 +1218,84 @@ def debug_plot(obj):
     plt.colorbar()
     plt.show()
 
+
+class SparseReconstruction(Reconstruction):
+    """
+    Class to perform sparse reconstruction based on FPM setup by incorporating L1 loss on the object estimate.
+    """
+    def set_regularizer(self, reg_type='none'):
+        """
+        Set the regularizer for the reconstruction.
+        """
+        if reg_type == 'none':
+            self.regularizer = None
+        elif reg_type == 'L1':
+            self.regularizer = lambda objest: torch.norm(objest, p=1)
+        elif reg_type == 'L2':
+            self.regularizer = lambda objest: torch.norm(objest, p=2)
+        else:
+            raise ValueError("Regularizer type not recognized")
+        return self.regularizer
+    
+    def parameters(self, step_size=1e1, num_iters=100, loss_type='2-norm', epochs=1, opt_type='Adam', reg_type='L1', tau_reg = 1e-3):
+        """
+        Initialize the parameters for the reconstruction.
+        """
+        self.set_regularizer(reg_type) # need to set the regularizer first before parameters sets lossfunc
+        super().parameters(step_size, num_iters, loss_type, epochs, opt_type)
+        self.tau_reg = tau_reg
+    
+    def set_loss(self, loss_type):
+        """
+        Set the loss function for the reconstruction.
+        """
+        super().set_loss(loss_type)
+        if self.regularizer is not None:
+        # Define a new loss function that includes the regularizer
+            data_lossfunc = self.lossfunc
+            self.lossfunc = lambda yest, meas, objest, **kwargs: data_lossfunc(yest, meas) + self.tau_reg * self.regularizer(objest)
+        return self.lossfunc
+
+    def wandb_init(self):
+        """
+        Initialize wandb logging and log important reconstruction parameters.
+        """
+        super().wandb_init()
+        wandb.log({"tau_reg": self.tau_reg})
+
+
+def save_simulation_results(fpm_setup, recon, save_dir, run_name):
+    """
+    Save the simulation results to disk.
+    
+    Args:
+        fpm_setup (FPM_setup): The FPM setup object
+        recon (Reconstruction): The reconstruction object
+        save_dir (str): Directory to save results
+        run_name (str): Name of the run
+    """ 
+    save_path = Path(save_dir/run_name)
+    save_path.mkdir(parents=True, exist_ok=True)
+    
+    # Save reconstructed object
+    obj2d = np.sum(recon.objest.detach().cpu().numpy(), axis=0)
+    np.save(save_path / 'reconstructed_object.npy', obj2d)
+    
+    # Save loss history
+    np.save(save_path / 'loss_history.npy', np.array(recon.losses))
+    
+    # Save final visualization
+    plt.figure(figsize=(16, 6))
+    plt.subplot(121)
+    plt.imshow(obj2d, cmap='gray')
+    plt.colorbar()
+    plt.title('Reconstructed Object')
+    
+    plt.subplot(122)
+    fftobj2d = np.fft.fftshift(np.fft.fft2(obj2d))
+    plt.imshow(np.log(np.abs(fftobj2d)), cmap='viridis')
+    plt.colorbar()
+    plt.title('FFT of Reconstructed Object')
+    
+    plt.savefig(save_path / 'final_reconstruction.png')
+    plt.close()
