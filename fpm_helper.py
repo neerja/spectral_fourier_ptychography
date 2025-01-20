@@ -819,7 +819,7 @@ class Reconstruction:
     Class to perform reconstruction based on FPM setup.
     """
 
-    def __init__(self, fpm_setup, measstack=None, device='cpu'):
+    def __init__(self, fpm_setup, measstack=None, device='cpu', recon_cfg=None):
         """
         Initialize the Reconstruction object.
 
@@ -838,7 +838,16 @@ class Reconstruction:
         self.objest = None
         self.device = device
         self.initRecon()
-        self.wandb_active = False
+        
+        if recon_cfg is not None:
+            self.parameters(
+                step_size=recon_cfg['step_size'],
+                num_iters=recon_cfg['num_iterations'],
+                loss_type=recon_cfg['loss_type'],
+                epochs=recon_cfg['epochs'],
+                opt_type=recon_cfg['optimizer']
+            )
+            self.wandb_init()
 
     def __str__(self):
         """
@@ -976,7 +985,6 @@ class Reconstruction:
         """
         Train the object estimate using the specified parameters.
         """
-        self.wandb_init()
 
         if self.device.type == 'cuda':
             with torch.no_grad():
@@ -1086,6 +1094,7 @@ class Reconstruction:
         """
         Initialize wandb logging and log important reconstruction parameters.
         """
+
         self.wandb_active = True
         wandb.init(project="Spectral_FPM", config={
             "learning_rate": self.step_size,
@@ -1096,7 +1105,6 @@ class Reconstruction:
             "device": str(self.device),
             "num_measurements": self.num_meas,
             "fpm_setup_info": str(self.fpm_setup),
-            "run_name": self.run_name
         })
         
         # log the led plot
@@ -1274,9 +1282,13 @@ def save_simulation_results(fpm_setup, recon, save_dir, run_name):
         save_dir (str): Directory to save results
         run_name (str): Name of the run
     """ 
-    save_path = Path(save_dir/run_name)
+
+    # get wandb run id
+    run_id = recon.wandb.run.id
+    save_path = Path(save_dir,run_name, run_id)
     save_path.mkdir(parents=True, exist_ok=True)
     
+
     # Save reconstructed object
     obj2d = np.sum(recon.objest.detach().cpu().numpy(), axis=0)
     np.save(save_path / 'reconstructed_object.npy', obj2d)

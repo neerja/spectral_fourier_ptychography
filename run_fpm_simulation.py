@@ -99,7 +99,7 @@ def run_spectral_fpm_simulation(config_path):
     
     recon = Reconstruction(
         fpm_setup=fpm_setup,
-        device=device
+        device=device, recon_cfg=recon_cfg
         )
     
     # Set reconstruction parameters
@@ -111,15 +111,25 @@ def run_spectral_fpm_simulation(config_path):
         opt_type=recon_cfg['optimizer']
     )
     
-    output_path = Path(config['logging']['save_dir'], config['logging']['run_name'])
+    run_id = recon.wandb.run.id
+    output_path = Path(config['logging']['save_dir'], config['logging']['run_name'], run_id)
     output_path.mkdir(parents=True, exist_ok=True)
     # save config file
-    with open(output_path / 'config_used.json', 'w') as f:
+    with open(output_path / f'config_{run_id}.json', 'w') as f:
         json.dump(config, f, indent=4)
     
     # Run reconstruction
     print("Starting reconstruction...")
-    recon.train(visualize=config['logging']['visualize'])
+    try:
+        recon.train(visualize=config['logging']['visualize'])
+    except KeyboardInterrupt:
+        print("\nReconstruction interrupted by user. Saving current results...")
+        save_simulation_results(fpm_setup, recon, config['logging']['save_dir'], config['logging']['run_name'])
+        sys.exit(0)
+    except Exception as e:
+        print(f"Error during reconstruction: {e}.  Saving current results...")
+        save_simulation_results(fpm_setup, recon, config['logging']['save_dir'], config['logging']['run_name'])
+        raise  # Re-raise the exception after saving results
     
     # Save results
     print("Saving results...")
