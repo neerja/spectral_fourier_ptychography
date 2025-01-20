@@ -13,14 +13,14 @@
         "spacing": 5.0,
         "distance": 75.0,
         "pattern": "spiral",
-        "num_leds": 100,
+        "num_leds": 10,
         "min_val": -3,
         "max_val": 3,
         "alpha": 20
     },
     "reconstruction":{
         "step_size": 1e-3,
-        "num_iterations": 100,
+        "num_iterations": 10,
         "epochs": 1,
         "loss_type": "2-norm",
         "optimizer": "Adam",

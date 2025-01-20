@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import wandb
-from fpm_helper import FPM_setup, Reconstruction, createlist_led, create_spiral_leds, use_gpu, save_simulation_results
+import fpm_helper as fpm_helper
 import matplotlib.pyplot as plt
 
 def parse_args():
@@ -41,6 +41,11 @@ def run_spectral_fpm_simulation(config_path):
         print(f"Config file not found: {config_path}")
         sys.exit(1)
     
+    if config['logging']['visualize']:
+        fpm_helper.plot_flag = True
+    else:
+        fpm_helper.plot_flag = False
+
     print("Setting up FPM simulation...")
     
     # Extract microscope parameters
@@ -55,7 +60,7 @@ def run_spectral_fpm_simulation(config_path):
     print(f"Using wavelength range: {wv_range} microns")
     
     # Create FPM setup
-    fpm_setup = FPM_setup(
+    fpm_setup = fpm_helper.FPM_setup(
         pix_size_camera=pix_size_camera,
         mag=mag,
         wv=wv_range,
@@ -67,13 +72,13 @@ def run_spectral_fpm_simulation(config_path):
     # Create LED array
     print(f"Creating {config['led_array']['pattern']} LED pattern...")
     if config['led_array']['pattern'] == 'random':
-        list_leds = createlist_led(
+        list_leds = fpm_helper.createlist_led(
             num_leds=config['led_array']['num_leds'],
             minval=config['led_array']['min_val'],
             maxval=config['led_array']['max_val']
         )
     elif config['led_array']['pattern'] == 'spiral':
-        list_leds = create_spiral_leds(
+        list_leds = fpm_helper.create_spiral_leds(
             num_leds=config['led_array']['num_leds'],
             minval=config['led_array']['min_val'],
             maxval=config['led_array']['max_val'],
@@ -95,9 +100,9 @@ def run_spectral_fpm_simulation(config_path):
     recon_cfg = config['reconstruction']
     device = torch.device(recon_cfg['device'])
     if recon_cfg['device'] == 'cuda':
-        device = use_gpu(recon_cfg['gpu_index'])
+        device = fpm_helper.use_gpu(recon_cfg['gpu_index'])
     
-    recon = Reconstruction(
+    recon = fpm_helper.Reconstruction(
         fpm_setup=fpm_setup,
         device=device, recon_cfg=recon_cfg
         )
@@ -115,16 +120,17 @@ def run_spectral_fpm_simulation(config_path):
         recon.train(visualize=config['logging']['visualize'])
     except KeyboardInterrupt:
         print("\nReconstruction interrupted by user. Saving current results...")
-        save_simulation_results(fpm_setup, recon, output_path)
+        fpm_helper.save_simulation_results(fpm_setup, recon, output_path)
+
         sys.exit(0)
     except Exception as e:
         print(f"Error during reconstruction: {e}.  Saving current results...")
-        save_simulation_results(fpm_setup, recon, output_path)
+        fpm_helper.save_simulation_results(fpm_setup, recon, output_path)
         raise  # Re-raise the exception after saving results
     
     # Save results
     print("Saving results...")
-    save_simulation_results(fpm_setup, recon, output_path)
+    fpm_helper.save_simulation_results(fpm_setup, recon, output_path)
     
     print(f"Simulation complete! Results saved to: {output_path}")
     return fpm_setup, recon

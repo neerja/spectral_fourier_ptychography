@@ -536,7 +536,7 @@ class FPM_setup:
             self.list_illums.append((illum_angle, tuple(np.arange(self.Nw))))
         return self.list_illums
 
-    def createMeasStackFromListIllums(self, list_illums = None):
+    def createMeasStackFromListIllums(self, list_illums = None, visualize=False):
         """
         Create a measurement stack by simulating measurements for each illumination 
         configuration in list_illums.
@@ -752,7 +752,7 @@ class FPM_setup:
 
         
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
     
     def updatePupilWithAperture(self):
         """
@@ -837,6 +837,7 @@ class Reconstruction:
         self.num_meas = len(self.fpm_setup.measstack)
         self.objest = None
         self.device = device
+        self.wandb_run = None  # Initialize wandb run as None
         self.initRecon()
         
         if recon_cfg is not None:
@@ -985,55 +986,60 @@ class Reconstruction:
         """
         Train the object estimate using the specified parameters.
         """
-
-        if self.device.type == 'cuda':
-            with torch.no_grad():
-                self.objest = self.objest.to(self.device)
-                self.fpm_setup.measstack = self.fpm_setup.measstack.to(self.device)
-                self.fpm_setup.to(self.device)
+        try:
+            if self.device.type == 'cuda':
+                with torch.no_grad():
+                    self.objest = self.objest.to(self.device)
+                    self.fpm_setup.measstack = self.fpm_setup.measstack.to(self.device)
+                    self.fpm_setup.to(self.device)
 
             self.objest.requires_grad = True
             
-        # check that self.num_meas and len(self.fpm_setup.list_illums) are the same if list_illums is not None  
-        if self.fpm_setup.list_illums is not None:
-            if self.num_meas != len(self.fpm_setup.list_illums):
-                raise ValueError("Number of measurements and list_illums must be the same")
-        
-        for k3 in np.arange(self.epochs):
-            for k2 in np.arange(self.num_meas):
-                meas = self.fpm_setup.measstack[k2, :, :].double().to(self.device)
-                try:
-                    illum_angle, wv_ind = self.fpm_setup.list_illums[k2]
-                    self.fpm_setup.createCustomAngleWavelengthIllumStack(illum_angle, wv_ind)
-                except: # backward compatibility for no list_illums
-                    led_ind = self.fpm_setup.list_leds[k2]
-                    illum_angle = self.fpm_setup.led_ind_to_illum_angle(led_ind)
-                    self.fpm_setup.createFixedAngleIllumStack(illum_angle)
+            # check that self.num_meas and len(self.fpm_setup.list_illums) are the same if list_illums is not None  
+            if self.fpm_setup.list_illums is not None:
+                if self.num_meas != len(self.fpm_setup.list_illums):
+                    raise ValueError("Number of measurements and list_illums must be the same")
+            
+            for k3 in np.arange(self.epochs):
+                for k2 in np.arange(self.num_meas):
+                    meas = self.fpm_setup.measstack[k2, :, :].double().to(self.device)
+                    try:
+                        illum_angle, wv_ind = self.fpm_setup.list_illums[k2]
+                        self.fpm_setup.createCustomAngleWavelengthIllumStack(illum_angle, wv_ind)
+                    except: # backward compatibility for no list_illums
+                        led_ind = self.fpm_setup.list_leds[k2]
+                        illum_angle = self.fpm_setup.led_ind_to_illum_angle(led_ind)
+                        self.fpm_setup.createFixedAngleIllumStack(illum_angle)
 
-                self.fpm_setup.illumstack = self.fpm_setup.illumstack.to(self.device)
+                    self.fpm_setup.illumstack = self.fpm_setup.illumstack.to(self.device)
 
-                for k1 in np.arange(self.num_iters):
-                    self.fpm_setup.objstack = self.objest
-                    (yest, pup_obj) = self.fpm_setup.forwardSFPM()
-                    error = self.lossfunc(yest, meas)
-                    self.losses.append(error.detach().cpu())
-                    error.backward()
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
-                    if self.wandb_active:
-                        self.wandb_logloss()
+                    for k1 in np.arange(self.num_iters):
+                        self.fpm_setup.objstack = self.objest
+                        (yest, pup_obj) = self.fpm_setup.forwardSFPM()
+                        error = self.lossfunc(yest, meas)
+                        self.losses.append(error.detach().cpu())
+                        error.backward()
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
+                        if self.wandb_active:
+                            self.wandb_logloss()
 
-                    if k1 == self.num_iters - 1:
-                        try:
-                            print(k3, k2, k1)
-                            if visualize:
-                                self.visualize(k1, k2, k3)
-                            if self.wandb_active:
-                                self.wandb_logplots()
-                        except KeyboardInterrupt:
-                            break
-        if self.wandb_active:
-            self.wandb_finish()
+                        if k1 == self.num_iters - 1:
+                            try:
+                                print(k3, k2, k1)
+                                if visualize:
+                                    self.visualize(k1, k2, k3)
+                                if self.wandb_active:
+                                    self.wandb_logplots()
+                            except KeyboardInterrupt:
+                                break
+            if self.wandb_active:
+                self.wandb_finish()
+        except KeyboardInterrupt:
+            print("\nTraining interrupted by user")
+            if self.wandb_active:
+                self.wandb_finish()
+            raise  # Re-raise the KeyboardInterrupt after cleanup
 
     def visualize(self, k1, k2, k3):
         """
@@ -1094,9 +1100,8 @@ class Reconstruction:
         """
         Initialize wandb logging and log important reconstruction parameters.
         """
-
         self.wandb_active = True
-        wandb.init(project="Spectral_FPM", config={
+        self.wandb_run = wandb.init(project="Spectral_FPM", config={
             "learning_rate": self.step_size,
             "num_iters": self.num_iters,
             "epochs": self.epochs,
@@ -1106,22 +1111,20 @@ class Reconstruction:
             "num_measurements": self.num_meas,
             "fpm_setup_info": str(self.fpm_setup),
         })
-        self.wandb_run_id = wandb.run.id
-        
+        self.wandb_run_id = self.wandb_run.id
+
         # log the led plot
-        fig, ax = plt.subplots(figsize=(6, 6))  # Use plt.subplots to create figure and axes
-        ax.scatter(self.fpm_setup.list_leds[:, 1], self.fpm_setup.list_leds[:, 0])  # Use ax.scatter for plotting
-        ax.set_aspect('equal', 'box')  # Set axis to square
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter(self.fpm_setup.list_leds[:, 1], self.fpm_setup.list_leds[:, 0])
+        ax.set_aspect('equal', 'box')
         ax.set_title('LED Locations')
         ax.set_xlabel('x')
         ax.set_ylabel('y')
-        if self.wandb_active:
-            wandb.log({"LED Plot": wandb.Image(fig)})  # Pass the figure object to wandb.Image
+        self.wandb_run.log({"LED Plot": wandb.Image(fig)})
         plt.close(fig)
 
-        # look at the coverage
+        # log the coverage plot
         coverage = self.fpm_setup.visualize_objectfft_coverage(self.fpm_setup.list_illums)
-        # Create a subplot for all wavelengths
         fig, axes = plt.subplots(1, self.fpm_setup.Nw, figsize=(4 * self.fpm_setup.Nw, 4))
         for wvind in range(self.fpm_setup.Nw):
             if self.fpm_setup.Nw == 1:
@@ -1133,51 +1136,54 @@ class Reconstruction:
             ax.set_xlabel('kx')
             ax.set_ylabel('ky')
             
-            # Adjust colorbar height
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
 
         plt.tight_layout()
-        plt.show()
-        # Log the figure to wandb
-        if self.wandb_active:
-            wandb.log({"Fourier Coverage Plot": wandb.Image(fig)})
+        self.wandb_run.log({"Fourier Coverage Plot": wandb.Image(fig)})
         plt.close(fig)
-            
+
     def wandb_logloss(self):
         """
         Log the loss to wandb.
         """
-        wandb.log({"Loss": self.losses[-1]})
+        if self.wandb_run is not None:
+            self.wandb_run.log({"Loss": self.losses[-1]})
 
     def wandb_logplots(self):
         """
         Log the object estimate, its zoomed central region, and its FFT to wandb.
         """
-        obj2d = np.sum(self.objest.detach().cpu().numpy(), axis=0)
-        fig = self.plot_object_estimate(obj2d)
-        wandb.log({"XY Object Estimate": wandb.Image(fig)})
-        plt.close(fig)
+        if self.wandb_run is not None:
+            obj2d = np.sum(self.objest.detach().cpu().numpy(), axis=0)
+            fig = self.plot_object_estimate(obj2d, show_plot=False)  # Don't show the plot
+            self.wandb_run.log({"XY Object Estimate": wandb.Image(fig)})
+            plt.close(fig)
 
     def wandb_finish(self):
         """
         Finish wandb logging.
         """
-        for k in range(self.Nw):
-            fig = self.plot_object_estimate(self.objest.detach().cpu().numpy()[k,:,:])
-            wandb.log({"Final Recon for Wavelength {}".format(k): wandb.Image(fig)})
-            plt.close(fig)
-        wandb.finish()
+        if self.wandb_run is not None:
+            for k in range(self.Nw):
+                fig = self.plot_object_estimate(self.objest.detach().cpu().numpy()[k,:,:])
+                self.wandb_run.log({"Final Recon for Wavelength {}".format(k): wandb.Image(fig)})
+                plt.close(fig)
+            self.wandb_run.finish()
+            self.wandb_run = None  # Clear the run after finishing
+        self.wandb_active = False
 
-    def plot_object_estimate(self, obj2d):
+    def plot_object_estimate(self, obj2d, show_plot=False):
         """
         Plot the object estimate, its zoomed central region, and its FFT.
 
         Args:
             obj2d (torch.Tensor): The 2D object estimate.
+            show_plot (bool): Whether to display the plot window.
         """
-        # Create a figure with three subplots
+        # Create figure without displaying
+        plt.ioff()  # Turn off interactive mode
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
 
         # Full image
@@ -1208,7 +1214,10 @@ class Reconstruction:
         fig.colorbar(im3, cax=cax3)
 
         plt.tight_layout()
-        # plt.show()
+        
+        if show_plot:
+            plt.ion()  # Turn interactive mode back on
+            plt.show(block=False)
 
         return fig
         
@@ -1285,23 +1294,24 @@ def save_simulation_results(fpm_setup, recon, save_path):
     """ 
     # Save reconstructed object
     obj2d = np.sum(recon.objest.detach().cpu().numpy(), axis=0)
-    np.save(save_path / 'reconstructed_object.npy', obj2d)
+    np.save(save_path / 'reconstructed_object.npy', recon.objest.detach().cpu().numpy())
     
     # Save loss history
     np.save(save_path / 'loss_history.npy', np.array(recon.losses))
     
     # Save final visualization
-    plt.figure(figsize=(16, 6))
-    plt.subplot(121)
-    plt.imshow(obj2d, cmap='gray')
-    plt.colorbar()
-    plt.title('Reconstructed Object')
-    
-    plt.subplot(122)
-    fftobj2d = np.fft.fftshift(np.fft.fft2(obj2d))
-    plt.imshow(np.log(np.abs(fftobj2d)), cmap='viridis')
-    plt.colorbar()
-    plt.title('FFT of Reconstructed Object')
+    # Create and save visualization using plot_object_estimate
+    fig = recon.plot_object_estimate(obj2d)
+    fig.savefig(save_path / 'final_reconstruction_sum.png', bbox_inches='tight', dpi=300)
+    plt.close(fig)
+
+    # save image for each wavelength
+    for k in range(fpm_setup.Nw):
+        fig = recon.plot_object_estimate(recon.objest.detach().cpu().numpy()[k,:,:])
+        fig.savefig(save_path / f'final_reconstruction_wavelength_{k}.png', bbox_inches='tight', dpi=300)
+        plt.close(fig)
     
     plt.savefig(save_path / 'final_reconstruction.png')
     plt.close()
+
+    recon.wandb_finish()
