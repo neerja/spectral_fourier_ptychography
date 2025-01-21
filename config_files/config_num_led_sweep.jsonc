@@ -2,7 +2,7 @@
     "microscope": {
         "magnification": 4,
         "pixel_size_camera": 4.0,
-        "na_objective": 0.05,
+        "na_objective": 0.025,
         "wavelength": {
             "start": 0.5,
             "end": 0.6, 
@@ -21,7 +21,7 @@
     "reconstruction":{
         "step_size": 1e-3,
         "num_iterations": 50,
-        "epochs": 2,
+        "epochs": 3,
         "loss_type": "2-norm",
         "optimizer": "Adam",
         "device": "cuda",
@@ -33,7 +33,7 @@
         "save_plots": true,
         "plot_interval": 10,
         "save_dir": "results",
-        "run_name": "num_leds_sweep",
+        "run_name": "20250121_num_leds_sweep_na025",
         "visualize": false
     }
 }

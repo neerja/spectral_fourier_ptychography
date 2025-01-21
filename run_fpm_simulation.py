@@ -128,15 +128,17 @@ def run_spectral_fpm_simulation(config_path):
         fpm_helper.save_simulation_results(fpm_setup, recon, output_path)
         raise  # Re-raise the exception after saving results
     
-    # Save results
-    print("Saving results...")
-    fpm_helper.save_simulation_results(fpm_setup, recon, output_path)
     # Compute metrics
-    metrics = recon.compute_metrics(
+    metrics = recon.compute_metrics() # has to be called before wandb_finish
     print(f"Metrics: {metrics}")
     # save metrics to file
     with open(output_path / f'metrics_{run_id}.json', 'w') as f:
         json.dump(metrics, f, indent=4)
+
+    # Save results
+    print("Saving results...")
+    fpm_helper.save_simulation_results(fpm_setup, recon, output_path)
+
         
     print(f"Simulation complete! Results saved to: {output_path}")
     return fpm_setup, recon

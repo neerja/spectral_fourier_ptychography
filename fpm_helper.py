@@ -1031,10 +1031,14 @@ class Reconstruction:
                                     self.visualize(k1, k2, k3)
                                 if self.wandb_active:
                                     self.wandb_logplots()
+                                    metrics_log = self.compute_metrics()
+                                    for wavelength, metrics in metrics_log.items():
+                                        # Log all metrics for this wavelength in a single step
+                                        self.wandb_run.log({f"{wavelength}/{metric_name}": value 
+                                                          for metric_name, value in metrics.items()})
                             except KeyboardInterrupt:
                                 break
-            if self.wandb_active:
-                self.wandb_finish()
+
         except KeyboardInterrupt:
             print("\nTraining interrupted by user")
             if self.wandb_active:
@@ -1287,9 +1291,12 @@ class Reconstruction:
                 'mae': float(F.l1_loss(curr_recon, curr_ground_truth))
             }
         
-        # Log metrics to wandb if active
-        if self.wandb_active:
-            self.wandb_run.log(metrics_log)
+        # # Log final metrics to wandb if active
+        # if self.wandb_active:
+        #     # Log final metrics directly to summary
+        #     for wavelength, metrics in metrics_log.items():
+        #         for metric_name, value in metrics.items():
+        #             self.wandb_run.summary[f"{wavelength}/{metric_name}"] = value
 
         return metrics_log
 
@@ -1385,4 +1392,5 @@ def save_simulation_results(fpm_setup, recon, save_path):
     plt.savefig(save_path / 'final_reconstruction.png')
     plt.close()
 
-    recon.wandb_finish()
+    if recon.wandb_active:
+        recon.wandb_finish()
