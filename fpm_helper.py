@@ -849,7 +849,7 @@ class Reconstruction:
                 epochs=recon_cfg['epochs'],
                 opt_type=recon_cfg['optimizer']
             )
-            if recon_cfg['use_wandb']:
+            if recon_cfg['logging']['use_wandb']:
                 self.wandb_init()
 
     def __str__(self):

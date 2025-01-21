@@ -102,19 +102,22 @@ def run_spectral_fpm_simulation(config_path):
     if recon_cfg['device'] == 'cuda':
         device = fpm_helper.use_gpu(recon_cfg['gpu_index'])
     
-    # recon = fpm_helper.Reconstruction(
-    #     fpm_setup=fpm_setup,
-    #     device=device, recon_cfg=recon_cfg
-    #     )
-    recon = fpm_helper.SparseReconstruction(
-        fpm_setup=fpm_setup,
-        device=device, 
-        recon_cfg={**config['reconstruction'], 'logging': config['logging']}  # Merge both sections
-    )
+    if config['reconstruction']['reg_type'] == 'L1' or config['reconstruction']['reg_type'] == 'L2':
+        recon = fpm_helper.SparseReconstruction(
+            fpm_setup=fpm_setup,
+            device=device, 
+            recon_cfg={**config['reconstruction'], 'logging': config['logging']}  # Merge both sections
+        )
+    else:
+        recon = fpm_helper.Reconstruction(
+            fpm_setup=fpm_setup,
+            device=device, 
+            recon_cfg={**config['reconstruction'], 'logging': config['logging']}  # Merge both sections
+        )
     try:
         run_id = recon.wandb_run_id
     except AttributeError:
-        run_id = f"{np.random.randint(0, 1000000):06d}"
+        run_id = "no_wandb"
     output_path = Path(config['logging']['save_dir'], config['logging']['run_name'], run_id)
     output_path.mkdir(parents=True, exist_ok=True)
     # save config file
