@@ -837,6 +837,7 @@ class Reconstruction:
         self.num_meas = len(self.fpm_setup.measstack)
         self.objest = None
         self.device = device
+        self.wandb_active = False
         self.wandb_run = None  # Initialize wandb run as None
         self.initRecon()
         
@@ -848,7 +849,8 @@ class Reconstruction:
                 epochs=recon_cfg['epochs'],
                 opt_type=recon_cfg['optimizer']
             )
-            self.wandb_init()
+            if recon_cfg['use_wandb']:
+                self.wandb_init()
 
     def __str__(self):
         """
@@ -1016,7 +1018,7 @@ class Reconstruction:
                     for k1 in np.arange(self.num_iters):
                         self.fpm_setup.objstack = self.objest
                         (yest, pup_obj) = self.fpm_setup.forwardSFPM()
-                        error = self.lossfunc(yest, meas)
+                        error = self.lossfunc(yest, meas, objest=self.objest)
                         self.losses.append(error.detach().cpu())
                         error.backward()
                         self.optimizer.step()
@@ -1319,6 +1321,23 @@ class SparseReconstruction(Reconstruction):
     """
     Class to perform sparse reconstruction based on FPM setup by incorporating L1 loss on the object estimate.
     """
+    def __init__(self, fpm_setup, measstack=None, device='cpu', recon_cfg=None):
+        # Initialize parent class without recon_cfg
+        super().__init__(fpm_setup, measstack, device, recon_cfg=None)
+        
+        if recon_cfg is not None:
+            self.parameters(
+                step_size=recon_cfg['step_size'],
+                num_iters=recon_cfg['num_iterations'],
+                loss_type=recon_cfg['loss_type'],
+                epochs=recon_cfg['epochs'],
+                opt_type=recon_cfg['optimizer'],
+                reg_type=recon_cfg['reg_type'],  # Will raise KeyError if not provided
+                tau_reg=recon_cfg['tau_reg']     # Will raise KeyError if not provided
+            )
+            if recon_cfg['logging']['use_wandb']:
+                self.wandb_init()
+
     def set_regularizer(self, reg_type='none'):
         """
         Set the regularizer for the reconstruction.

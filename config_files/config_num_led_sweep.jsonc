@@ -25,15 +25,15 @@
         "loss_type": "2-norm",
         "optimizer": "Adam",
         "device": "cuda",
-        "gpu_index": 0
+        "gpu_index": 0,
+        "reg_type": "L1",
+        "tau_reg": 1e-3
     },
     "logging": {
-        "use_wandb": true,
+        "use_wandb": false,
         "project_name": "Spectral_FPM",
-        "save_plots": true,
-        "plot_interval": 10,
         "save_dir": "results",
-        "run_name": "20250121_num_leds_sweep_na025",
+        "run_name": "test_run",
         "visualize": false
     }
 }

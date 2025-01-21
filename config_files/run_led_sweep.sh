@@ -4,7 +4,7 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Loop through LED counts from x to x in steps of x
-for num_leds in {10..110..10}; do
+for num_leds in {120..300..20}; do
     echo "Running simulation with $num_leds LEDs..."
     
     # Create temporary config file with updated num_leds using Python
