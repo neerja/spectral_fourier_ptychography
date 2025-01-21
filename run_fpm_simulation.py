@@ -131,7 +131,13 @@ def run_spectral_fpm_simulation(config_path):
     # Save results
     print("Saving results...")
     fpm_helper.save_simulation_results(fpm_setup, recon, output_path)
-    
+    # Compute metrics
+    metrics = recon.compute_metrics(
+    print(f"Metrics: {metrics}")
+    # save metrics to file
+    with open(output_path / f'metrics_{run_id}.json', 'w') as f:
+        json.dump(metrics, f, indent=4)
+        
     print(f"Simulation complete! Results saved to: {output_path}")
     return fpm_setup, recon
 

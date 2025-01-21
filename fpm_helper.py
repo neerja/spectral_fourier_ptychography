@@ -1041,6 +1041,7 @@ class Reconstruction:
                 self.wandb_finish()
             raise  # Re-raise the KeyboardInterrupt after cleanup
 
+
     def visualize(self, k1, k2, k3):
         """
         Visualize the object estimate and its FFT.
@@ -1221,6 +1222,76 @@ class Reconstruction:
 
         return fig
         
+
+    def compute_metrics(self):
+        """
+        Compute the SSIM, PSNR, and MSE between the reconstruction and the ground truth.
+        
+        Returns:
+            dict: Dictionary containing the computed metrics for each wavelength:
+                - 'ssim': Structural Similarity Index (higher is better, max 1)
+                - 'psnr': Peak Signal-to-Noise Ratio in dB (higher is better)
+                - 'mse': Mean Squared Error (lower is better)
+                - 'mae': Mean Absolute Error (lower is better)
+                
+        Notes:
+            - Requires ground truth object to be stored in self.fpm_setup.obj
+            - Metrics are computed separately for each wavelength
+            - All metrics are computed on normalized images (0 to 1 range)
+        """
+        import torch.nn.functional as F
+        from torchmetrics.functional import structural_similarity_index_measure as ssim
+        from torchmetrics.functional import peak_signal_noise_ratio as psnr
+        
+        # Check if ground truth exists
+        if not hasattr(self.fpm_setup, 'obj'):
+            raise ValueError("Ground truth object not found in FPM setup")
+        
+        # Get reconstruction and ground truth
+        recon_est = self.objest.detach()
+        ground_truth = self.fpm_setup.obj.to(recon_est.device)
+        
+        # Normalize ground truth
+        ground_truth = (ground_truth - ground_truth.min()) / (ground_truth.max() - ground_truth.min())
+        
+        metrics_log = {}
+        for k in range(self.Nw):
+            # Normalize reconstruction for current wavelength
+            curr_recon = recon_est[k,:,:]
+            curr_recon = (curr_recon - curr_recon.min()) / (curr_recon.max() - curr_recon.min())
+            
+            # Add batch and channel dimensions required by metrics
+            curr_recon = curr_recon.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, H, W]
+            curr_ground_truth = ground_truth.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, H, W]
+            
+            # Compute metrics
+            metrics_log[f'wavelength_{self.fpm_setup.wv[k] * 1000:.0f}nm'] = {
+                'ssim': float(ssim(curr_recon, curr_ground_truth, data_range=1.0)),
+                'psnr': float(psnr(curr_recon, curr_ground_truth, data_range=1.0)),
+                'mse': float(F.mse_loss(curr_recon, curr_ground_truth)),
+                'mae': float(F.l1_loss(curr_recon, curr_ground_truth))
+            }
+            # compute total metrics
+            curr_recon = recon_est.sum(dim=0).detach()  # Sum across wavelengths
+            # Normalize reconstruction
+            curr_recon = (curr_recon - curr_recon.min()) / (curr_recon.max() - curr_recon.min())
+            
+            # Add batch and channel dimensions required by metrics
+            curr_recon = curr_recon.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, H, W]
+            curr_ground_truth = ground_truth.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, H, W]
+            
+            metrics_log['summed_wavelengths'] = {
+                'ssim': float(ssim(curr_recon, curr_ground_truth, data_range=1.0)),
+                'psnr': float(psnr(curr_recon, curr_ground_truth, data_range=1.0)),
+                'mse': float(F.mse_loss(curr_recon, curr_ground_truth)),
+                'mae': float(F.l1_loss(curr_recon, curr_ground_truth))
+            }
+        
+        # Log metrics to wandb if active
+        if self.wandb_active:
+            self.wandb_run.log(metrics_log)
+
+        return metrics_log
 
 def debug_plot(obj): 
     """
