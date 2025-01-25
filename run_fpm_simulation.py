@@ -68,7 +68,13 @@ def run_spectral_fpm_simulation(config_path):
         led_spacing=config['led_array']['spacing'],
         dist=config['led_array']['distance']
     )
-    
+
+    if 'aperture' in config['microscope'] and config['microscope']['aperture'] == 'spectral_filter':
+        # place filter array
+        tile = fpm_setup.createTile()
+        fpm_setup.createAperture(tile)
+        fpm_setup.updatePupilWithAperture()
+
     # Create LED array
     print(f"Creating {config['led_array']['pattern']} LED pattern...")
     if config['led_array']['pattern'] == 'random':
@@ -114,6 +120,12 @@ def run_spectral_fpm_simulation(config_path):
             device=device, 
             recon_cfg={**config['reconstruction'], 'logging': config['logging']}  # Merge both sections
         )
+        
+    if config['logging']['use_wandb']:
+        recon.wandb_run.config.update({"na_obj": config['microscope']['na_objective'] })
+        if 'aperture' in config['microscope'] and config['microscope']['aperture'] == 'spectral_filter':
+            recon.wandb_run.config.update({"aperture": "spectral_filter" })
+
     try:
         run_id = recon.wandb_run_id
     except AttributeError:

@@ -851,6 +851,9 @@ class Reconstruction:
             )
             if recon_cfg['logging']['use_wandb']:
                 self.wandb_init()
+                self.wandb_run.config.update({
+                    "run_name": recon_cfg['logging']['run_name']
+                })
 
     def __str__(self):
         """
@@ -960,9 +963,9 @@ class Reconstruction:
             callable: The loss function.
         """
         if loss_type == 'MSE':
-            self.lossfunc = lambda yest, meas, **kwargs: torch.nn.MSELoss(yest - meas)
+            self.lossfunc = lambda yest, meas, objest=None, **kwargs: torch.nn.MSELoss()(yest - meas)
         elif loss_type == '2-norm':
-            self.lossfunc = lambda yest, meas, **kwargs: torch.norm(yest - meas)
+            self.lossfunc = lambda yest, meas, objest=None, **kwargs: torch.norm(yest - meas)
         else:
             raise ValueError("Loss type not recognized")
         return self.lossfunc
@@ -1359,6 +1362,7 @@ class SparseReconstruction(Reconstruction):
         self.set_regularizer(reg_type) # need to set the regularizer first before parameters sets lossfunc
         super().parameters(step_size, num_iters, loss_type, epochs, opt_type)
         self.tau_reg = tau_reg
+        self.reg_type = reg_type
     
     def set_loss(self, loss_type):
         """
@@ -1368,7 +1372,7 @@ class SparseReconstruction(Reconstruction):
         if self.regularizer is not None:
         # Define a new loss function that includes the regularizer
             data_lossfunc = self.lossfunc
-            self.lossfunc = lambda yest, meas, objest, **kwargs: data_lossfunc(yest, meas) + self.tau_reg * self.regularizer(objest)
+            self.lossfunc = lambda yest, meas, objest=None, **kwargs: data_lossfunc(yest, meas) + self.tau_reg * self.regularizer(objest)
         return self.lossfunc
 
     def wandb_init(self):
@@ -1376,8 +1380,11 @@ class SparseReconstruction(Reconstruction):
         Initialize wandb logging and log important reconstruction parameters.
         """
         super().wandb_init()
-        wandb.log({"tau_reg": self.tau_reg})
-
+        
+        self.wandb_run.config.update({
+            "tau_reg": self.tau_reg,
+            "reg_type": self.reg_type
+        })
 
 def save_simulation_results(fpm_setup, recon, save_path):
     """

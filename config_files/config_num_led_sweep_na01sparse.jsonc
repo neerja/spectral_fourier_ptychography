@@ -2,7 +2,7 @@
     "microscope": {
         "magnification": 4,
         "pixel_size_camera": 4.0,
-        "na_objective": 0.025,
+        "na_objective": 0.1,
         "wavelength": {
             "start": 0.5,
             "end": 0.6, 
@@ -13,10 +13,10 @@
         "spacing": 5.0,
         "distance": 75.0,
         "pattern": "spiral",
-        "num_leds": 300,
+        "num_leds": 30,
         "min_val": -4,
         "max_val": 4,
-        "alpha": 40
+        "alpha": 20
     },
     "reconstruction":{
         "step_size": 1e-3,
@@ -25,15 +25,15 @@
         "loss_type": "2-norm",
         "optimizer": "Adam",
         "device": "cuda",
-        "gpu_index": 0,
-        "reg_type": "none",
+        "gpu_index": 1,
+        "reg_type": "L1",
         "tau_reg": 1e-4
     },
     "logging": {
-        "use_wandb": false,
+        "use_wandb": true,
         "project_name": "Spectral_FPM",
         "save_dir": "results",
-        "run_name": "20250121_num_leds_sweep_na025",
-        "visualize": true
+        "run_name": "20250121_num_leds_sweep_na01_sparse",
+        "visualize": false
     }
 }
