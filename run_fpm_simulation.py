@@ -84,7 +84,7 @@ def run_spectral_fpm_simulation(config_path):
             maxval=config['led_array']['max_val']
         )
     elif config['led_array']['pattern'] == 'spiral':
-        list_leds = fpm_helper.create_spiral_leds(
+        list_leds = fpm_helper.create_spiral_leds_CLV(
             num_leds=config['led_array']['num_leds'],
             minval=config['led_array']['min_val'],
             maxval=config['led_array']['max_val'],

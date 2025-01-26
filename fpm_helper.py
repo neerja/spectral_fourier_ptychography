@@ -113,7 +113,20 @@ def create_spiral_leds(num_leds=100, minval=-3, maxval=3, alpha=0.1):
     list_leds = np.vstack((x, y)).T
 
     return list_leds
-    
+
+def create_spiral_leds_CLV(num_leds=100, minval=-3, maxval=3, alpha = 1):
+    """
+    Create a spiral pattern of LEDs starting from the center (0,0) and spiraling outward
+    with consistent spacing between LEDs.
+    """
+
+    t = np.arange(0,num_leds)
+    theta = np.sqrt(alpha/10*4*np.pi*t)
+    r = np.sqrt(t/np.pi)
+    r = r/np.max(r)*maxval
+    x = r*np.cos(theta)
+    y = r*np.sin(theta)
+    return np.vstack((x,y)).T
 
 class FPM_setup:
     """
@@ -850,10 +863,8 @@ class Reconstruction:
                 opt_type=recon_cfg['optimizer']
             )
             if recon_cfg['logging']['use_wandb']:
-                self.wandb_init()
-                self.wandb_run.config.update({
-                    "run_name": recon_cfg['logging']['run_name']
-                })
+                self.wandb_init(recon_cfg)
+
 
     def __str__(self):
         """
@@ -1084,14 +1095,20 @@ class Reconstruction:
         obj2d = np.sum(self.objest.detach().cpu().numpy(), axis=0)
         im_obj = ax_obj.imshow(obj2d, cmap='gray')
         ax_obj.set_title(f'Object 2D Estimate after Epoch {k3+1} Meas {k2+1} Iter {k1+1}')
-        plt.colorbar(im_obj, ax=ax_obj, orientation='vertical')
-
+        divider = make_axes_locatable(ax_obj)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(im_obj, cax=cax)
+        cbar.ax.tick_params(labelsize=24, left=False, right=False)  # Set fontsize and remove side ticks
+        
         # FFT subplot
         ax_fft = fig.add_subplot(122)
         fftobj2d = np.fft.fftshift(np.fft.fft2(obj2d))
         im_fft = ax_fft.imshow(np.log(np.abs(fftobj2d)), cmap='viridis')
         ax_fft.set_title('FFT of Object 2D Estimate')
-        plt.colorbar(im_fft, ax=ax_fft, orientation='vertical')
+        divider = make_axes_locatable(ax_fft)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(im_fft, cax=cax)
+        cbar.ax.tick_params(labelsize=24, left=False, right=False)  # Set fontsize and remove side ticks
 
         # Save figure
         fig.savefig('object_estimate_fft.png', bbox_inches='tight')
@@ -1106,7 +1123,7 @@ class Reconstruction:
         plt.close(loss_fig)
         plt.close(fig)
 
-    def wandb_init(self):
+    def wandb_init(self, config = None):
         """
         Initialize wandb logging and log important reconstruction parameters.
         """
@@ -1120,16 +1137,19 @@ class Reconstruction:
             "device": str(self.device),
             "num_measurements": self.num_meas,
             "fpm_setup_info": str(self.fpm_setup),
-        })
+            "run_name": config['logging']['run_name']}, 
+            tags = config['logging']['tags'])
         self.wandb_run_id = self.wandb_run.id
-
+        
         # log the led plot
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.scatter(self.fpm_setup.list_leds[:, 1], self.fpm_setup.list_leds[:, 0])
         ax.set_aspect('equal', 'box')
-        ax.set_title('LED Locations')
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
+        ax.set_title('LED Locations', fontsize = 24)
+        ax.set_xlabel('x', fontsize = 24)
+        ax.set_ylabel('y', fontsize = 24)
+        ax.set_xticks([])
+        ax.set_yticks([])
         self.wandb_run.log({"LED Plot": wandb.Image(fig)})
         plt.close(fig)
 
@@ -1141,14 +1161,18 @@ class Reconstruction:
                 ax = axes
             else:
                 ax = axes[wvind]
-            im = ax.imshow(coverage[wvind].cpu())
-            ax.set_title(f'Fourier Coverage for wavelength {self.fpm_setup.wv[wvind] * 1000:.0f} nm')
-            ax.set_xlabel('kx')
-            ax.set_ylabel('ky')
+            im = ax.imshow(coverage[wvind].cpu(), cmap = 'inferno') 
+            ax.set_title(f'Fourier Coverage for wavelength {self.fpm_setup.wv[wvind] * 1000:.0f} nm', fontsize = 24, wrap=True)
+            # turn of axes
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xlabel('kx', fontsize = 24)
+            ax.set_ylabel('ky', fontsize = 24)
             
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
-            plt.colorbar(im, cax=cax)
+            cbar = plt.colorbar(im, cax=cax)
+            cbar.ax.tick_params(labelsize=24, left=False, right=False)  # Set fontsize and remove side ticks
 
         plt.tight_layout()
         self.wandb_run.log({"Fourier Coverage Plot": wandb.Image(fig)})
@@ -1198,11 +1222,16 @@ class Reconstruction:
 
         # Full image
         im1 = ax1.imshow(obj2d, cmap='gray')
-        ax1.set_title('Full Recon Image')
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        # turn of axes
+        ax1.set_xticks([])
+        ax1.set_yticks([])
+        ax1.set_xlabel('x', fontsize = 24)
+        ax1.set_ylabel('y', fontsize = 24)
+        ax1.set_title('Full Recon Image', fontsize = 24)
         divider1 = make_axes_locatable(ax1)
         cax1 = divider1.append_axes("right", size="5%", pad=0.05)
-        fig.colorbar(im1, cax=cax1)
+        cbar = plt.colorbar(im1, cax=cax1)
+        cbar.ax.tick_params(labelsize=24, left=False, right=False)  # Set fontsize and remove side ticks
         
         # Zoomed central region
         center_y, center_x = obj2d.shape[0] // 2, obj2d.shape[1] // 2
@@ -1210,18 +1239,28 @@ class Reconstruction:
         zoom_region = obj2d[center_y - zoom_size // 2:center_y + zoom_size // 2,
                             center_x - zoom_size // 2:center_x + zoom_size // 2]
         im2 = ax2.imshow(zoom_region, cmap='gray')
-        ax2.set_title('Zoomed Central Region')
+        ax2.set_xticks([])
+        ax2.set_yticks([])
+        ax2.set_xlabel('x', fontsize = 24)
+        ax2.set_ylabel('y', fontsize = 24)
+        ax2.set_title('Zoomed Central Region', fontsize = 24)
         divider2 = make_axes_locatable(ax2)
         cax2 = divider2.append_axes("right", size="5%", pad=0.05)
-        fig.colorbar(im2, cax=cax2)
+        cbar = plt.colorbar(im2, cax=cax2)
+        cbar.ax.tick_params(labelsize=24, left=False, right=False)  # Set fontsize and remove side ticks
 
         # FFT of the object estimate
         fftobj2d = np.fft.fftshift(np.fft.fft2(obj2d))
         im3 = ax3.imshow(np.log(np.abs(fftobj2d)), cmap='viridis')
-        ax3.set_title('FFT of Object 2D Estimate')
+        ax3.set_xticks([])
+        ax3.set_yticks([])
+        ax3.set_xlabel('kx', fontsize = 24)
+        ax3.set_ylabel('ky', fontsize = 24)
+        ax3.set_title('FFT of Object 2D Estimate', fontsize = 24)
         divider3 = make_axes_locatable(ax3)
         cax3 = divider3.append_axes("right", size="5%", pad=0.05)
-        fig.colorbar(im3, cax=cax3)
+        cbar = plt.colorbar(im3, cax=cax3)
+        cbar.ax.tick_params(labelsize=24, left=False, right=False)  # Set fontsize and remove side ticks
 
         plt.tight_layout()
         
@@ -1339,7 +1378,7 @@ class SparseReconstruction(Reconstruction):
                 tau_reg=recon_cfg['tau_reg']     # Will raise KeyError if not provided
             )
             if recon_cfg['logging']['use_wandb']:
-                self.wandb_init()
+                self.wandb_init(recon_cfg)
 
     def set_regularizer(self, reg_type='none'):
         """
