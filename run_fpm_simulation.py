@@ -53,7 +53,7 @@ def run_spectral_fpm_simulation(config_path):
     mag = micro_cfg['magnification']
     pix_size_camera = micro_cfg['pixel_size_camera']
     na_obj = micro_cfg['na_objective']
-    
+    spectral_obj = micro_cfg['spectral_obj']
     # Create wavelength range
     wv_cfg = micro_cfg['wavelength']
     wv_range = np.arange(wv_cfg['start'], wv_cfg['end'], wv_cfg['step'])
@@ -66,7 +66,8 @@ def run_spectral_fpm_simulation(config_path):
         wv=wv_range,
         na_obj=na_obj,
         led_spacing=config['led_array']['spacing'],
-        dist=config['led_array']['distance']
+        dist=config['led_array']['distance'],
+        spectral_obj=spectral_obj
     )
 
     if 'aperture' in config['microscope'] and config['microscope']['aperture'] == 'spectral_filter':

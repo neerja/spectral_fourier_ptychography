@@ -15,24 +15,31 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 # Global flag for plotting
 plot_flag = True
 
-def use_gpu(gpu=2):
+def use_gpu(gpu):
     """
-    Set the GPU device for PyTorch and return the device object.
-
-    Args:
-        gpu (int): The GPU index to use. Defaults to 2.
-
-    Returns:
-        torch.device: The device object for the specified GPU.
+    Set up GPU device if available.
+    
+    Parameters
+    ----------
+    gpu : int or None
+        GPU device index to use. If None, CPU will be used.
+        
+    Returns
+    -------
+    device : torch.device
+        Device to use for computations
     """
     if gpu is not None:
         os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-        torch.cuda.set_device(gpu)
-        device = torch.device("cuda:"+str(gpu) if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            device = torch.device(f'cuda:{gpu}')
+            torch.cuda.device(device)  # This is the updated way to set the device
+        else:
+            print("CUDA not available. Using CPU instead.")
+            device = torch.device('cpu')
     else:
-        device = torch.device('cpu')  # Use CPU if no GPU is specified
-    torch.cuda.empty_cache()  # Free up space by emptying the cache
-    print(device)
+        device = torch.device('cpu')
+    
     return device
 
 def preprocessObject(im):
@@ -135,7 +142,7 @@ class FPM_setup:
     It will also contain the physical parameters associatied with the microsocope (ex: mag, NA, etc).
     """
 
-    def __init__(self, pix_size_camera=None, mag=None, wv=None, na_obj=None, Nx=None, Ny=None, led_spacing=5, dist=75, list_leds=None):
+    def __init__(self, pix_size_camera=None, mag=None, wv=None, na_obj=None, Nx=None, Ny=None, led_spacing=5, dist=75, list_leds=None, spectral_obj='uniform'):
         """
         Initialize the FPM setup with optional parameters.
 
@@ -213,8 +220,12 @@ class FPM_setup:
         # Create pupil stack for setup
         self.createPupilStack()
 
-        # Create default uniform spectral object
-        self.makeUniformSpectralObject()
+        self.spectral_obj = spectral_obj
+        if self.spectral_obj == 'varying':
+            self.create_spectral_usaf_object(sinrate = 5, cosrate = 5)
+        else:
+            # Create default uniform spectral object
+            self.makeUniformSpectralObject()
 
         # Initialize LED-related attributes
         self.led_spacing = led_spacing
@@ -239,6 +250,7 @@ class FPM_setup:
             f"LED Spacing: {self.led_spacing} mm\n"
             f"Distance: {self.dist} mm\n"
             f"Total number of angles: {len(self.list_leds) if hasattr(self, 'list_leds') and self.list_leds is not None else 0}\n"
+            f"Spectral Object: {self.spectral_obj}\n"
         )
         
         # Add information about illumination configurations
@@ -273,11 +285,81 @@ class FPM_setup:
             path = '/mnt/neerja-DATA/SpectralFPMData/usafrestarget.jpeg'
             im = torch.from_numpy(image.imread(path))[:, :, 0]
         obj = preprocessObject(im)
+        
         spectrum = torch.ones([self.Nw, 1, 1])  # Spectrum vector
         spectral_obj = obj.unsqueeze(0) * spectrum  # Elementwise multiply
+        
+        self.objstack = spectral_obj
+        self.obj = obj 
+        return self.objstack
+    def create_spectral_usaf_object(self, width_range=(50, 150), sinrate = 1, cosrate = 1, obj=None):
+        """
+        Create a spectrally varying USAF target where each position has a Gaussian spectral profile
+        that smoothly varies across the image.
+        
+        Parameters
+        ----------
+        width_range : tuple
+            (min, max) range for the Gaussian width variation (in nm)
+        sinrate : float
+            Rate of sinusoidal variation in the center wavelength across the image.
+            Higher values create more rapid variations.
+        cosrate : float 
+            Rate of cosinusoidal variation in the Gaussian width across the image.
+            Higher values create more rapid variations.
+        obj : torch.Tensor, optional
+            Input object to use. If None, loads default USAF target.
+            
+        Returns
+        -------
+        torch.Tensor
+            The spectral object stack with shape (wavelengths, height, width).
+            Each spatial position has a unique Gaussian spectral profile that
+            varies smoothly across the image.
+        """
+        wavelengths = self.wv*1e3 # convert to nm
+        if obj is None:
+            path = '/mnt/neerja-DATA/SpectralFPMData/usafrestarget.jpeg'
+            im = torch.from_numpy(image.imread(path))[:, :, 0]
+        obj = preprocessObject(im)
+        center_wl_range = (wavelengths[0] + 0.2*(wavelengths[-1]-wavelengths[0]), wavelengths[0] + 0.8*(wavelengths[-1]-wavelengths[0]))
+        
+        # Create coordinate grids
+        y = torch.arange(obj.shape[0], dtype=torch.float32)
+        x = torch.arange(obj.shape[1], dtype=torch.float32)
+        y, x = torch.meshgrid(y, x, indexing='ij')
+        
+        # Create smooth variations using sine functions
+        center_wl_map = (torch.sin(2*np.pi*sinrate*x/obj.shape[1]) * torch.sin(2*np.pi*sinrate*y/obj.shape[0]))
+        width_map = (torch.cos(2*np.pi*cosrate*x/obj.shape[1]) * torch.cos(2*np.pi*cosrate*y/obj.shape[0]))
+        
+        # Scale to desired ranges
+        center_wl_map = (center_wl_map - center_wl_map.min()) / (center_wl_map.max() - center_wl_map.min())
+        center_wl_map = center_wl_map * (center_wl_range[1] - center_wl_range[0]) + center_wl_range[0]
+        
+        width_map = (width_map - width_map.min()) / (width_map.max() - width_map.min())
+        width_map = width_map * (width_range[1] - width_range[0]) + width_range[0]
+        
+        # Convert wavelengths to tensor
+        wavelengths = torch.tensor(wavelengths, dtype=torch.float32)
+        
+        # Create spectral object
+        spectral_obj = torch.zeros((len(wavelengths), obj.shape[0], obj.shape[1]))
+        
+        # Vectorized computation of Gaussian spectra
+        wavelengths_expanded = wavelengths.view(-1, 1, 1)
+        center_wl_expanded = center_wl_map.unsqueeze(0)
+        width_expanded = width_map.unsqueeze(0)
+        
+        # Compute Gaussian spectra for all positions at once
+        spectra = torch.exp(-(wavelengths_expanded - center_wl_expanded)**2 / (2*width_expanded**2))
+        
+        # Multiply by object features
+        spectral_obj = spectra * obj.unsqueeze(0)
+        
         self.objstack = spectral_obj
         self.obj = obj
-        return self.objstack
+        return spectral_obj
 
     def createPupilStop(self, wv):
         """
@@ -1155,25 +1237,27 @@ class Reconstruction:
 
         # log the coverage plot
         coverage = self.fpm_setup.visualize_objectfft_coverage(self.fpm_setup.list_illums)
-        fig, axes = plt.subplots(1, self.fpm_setup.Nw, figsize=(4 * self.fpm_setup.Nw, 4))
+        fig, axes = plt.subplots(1, self.fpm_setup.Nw, figsize=(6 * self.fpm_setup.Nw, 5))
         for wvind in range(self.fpm_setup.Nw):
             if self.fpm_setup.Nw == 1:
                 ax = axes
             else:
                 ax = axes[wvind]
             im = ax.imshow(coverage[wvind].cpu(), cmap = 'inferno') 
-            ax.set_title(f'Fourier Coverage for wavelength {self.fpm_setup.wv[wvind] * 1000:.0f} nm', fontsize = 24, wrap=True)
-            # turn of axes
+            ax.set_title(f'{self.fpm_setup.wv[wvind] * 1000:.0f} nm', fontsize = 16)
+            # turn off axes
             ax.set_xticks([])
             ax.set_yticks([])
-            ax.set_xlabel('kx', fontsize = 24)
-            ax.set_ylabel('ky', fontsize = 24)
+            ax.set_xlabel('kx', fontsize = 16)
+            ax.set_ylabel('ky', fontsize = 16)
             
             divider = make_axes_locatable(ax)
             cax = divider.append_axes("right", size="5%", pad=0.05)
             cbar = plt.colorbar(im, cax=cax)
-            cbar.ax.tick_params(labelsize=24, left=False, right=False)  # Set fontsize and remove side ticks
+            cbar.ax.tick_params(labelsize=16, left=False, right=False)
 
+        # Add a main title for the entire figure
+        fig.suptitle('Fourier Coverage by Wavelength', fontsize=24, y=1.05)
         plt.tight_layout()
         self.wandb_run.log({"Fourier Coverage Plot": wandb.Image(fig)})
         plt.close(fig)
@@ -1243,7 +1327,7 @@ class Reconstruction:
         ax2.set_yticks([])
         ax2.set_xlabel('x', fontsize = 24)
         ax2.set_ylabel('y', fontsize = 24)
-        ax2.set_title('Zoomed Central Region', fontsize = 24)
+        ax2.set_title('Zoomed Central Region', fontsize = 24, wrap=True)
         divider2 = make_axes_locatable(ax2)
         cax2 = divider2.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(im2, cax=cax2)
@@ -1256,7 +1340,7 @@ class Reconstruction:
         ax3.set_yticks([])
         ax3.set_xlabel('kx', fontsize = 24)
         ax3.set_ylabel('ky', fontsize = 24)
-        ax3.set_title('FFT of Object 2D Estimate', fontsize = 24)
+        ax3.set_title('FFT of Object 2D Estimate', fontsize = 24, wrap=True)
         divider3 = make_axes_locatable(ax3)
         cax3 = divider3.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(im3, cax=cax3)
@@ -1459,3 +1543,44 @@ def save_simulation_results(fpm_setup, recon, save_path):
 
     if recon.wandb_active:
         recon.wandb_finish()
+
+def spectral_obj_to_color(spectral_obj, wavelengths):
+    """
+    Convert a hyperspectral image to RGB using wavelength-to-RGB approximation.
+    
+    Parameters
+    ----------
+    spectral_obj : torch.Tensor
+        3D tensor of shape (wavelengths, height, width) containing the spectral image
+    wavelengths : torch.Tensor
+        Tensor of wavelengths in nanometers
+        
+    Returns
+    -------
+    torch.Tensor
+        3D tensor of shape (height, width, 3) containing the RGB image
+    """
+    
+    # Initialize RGB image
+    height, width = spectral_obj.shape[1:]
+    rgb_img = torch.zeros((height, width, 3), device=spectral_obj.device)
+    
+    # Approximate RGB response curves
+    # These are simplified Gaussian curves centered at R,G,B peak sensitivities
+    def gaussian(x, mu, sig):
+        return torch.exp(-(x - mu)**2 / (2 * sig**2))
+    
+    # Define response curves for R,G,B
+    R_response = gaussian(wavelengths, 650, 50)  # Red centered at 650nm
+    G_response = gaussian(wavelengths, 550, 50)  # Green centered at 550nm
+    B_response = gaussian(wavelengths, 450, 50)  # Blue centered at 450nm
+    
+    # Compute RGB channels by integrating spectral data with response curves
+    rgb_img[:,:,0] = torch.sum(spectral_obj * R_response.unsqueeze(-1).unsqueeze(-1), dim=0)
+    rgb_img[:,:,1] = torch.sum(spectral_obj * G_response.unsqueeze(-1).unsqueeze(-1), dim=0)
+    rgb_img[:,:,2] = torch.sum(spectral_obj * B_response.unsqueeze(-1).unsqueeze(-1), dim=0)
+    
+    # Normalize
+    # rgb_img = rgb_img / rgb_img.max()
+    
+    return rgb_img

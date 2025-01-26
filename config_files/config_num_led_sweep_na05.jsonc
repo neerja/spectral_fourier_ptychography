@@ -7,7 +7,9 @@
             "start": 0.5,
             "end": 0.6, 
             "step": 0.1
-        }
+        },
+        "aperture": "spectral_filter",
+        "spectral_obj": "uniform"
     },
     "led_array": {
         "spacing": 5.0,
@@ -33,7 +35,8 @@
         "use_wandb": true,
         "project_name": "Spectral_FPM",
         "save_dir": "results",
-        "run_name": "20250124_num_leds_sweep_na05",
-        "visualize": false
+        "run_name": "20250126_num_leds_sweep_na005_newspiral",
+        "visualize": false,
+        "tags": ["num_leds_sweep", "na005", "newspiral"]
     }
 }
