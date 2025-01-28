@@ -18,7 +18,7 @@
         "num_leds": 60,
         "min_val": -4,
         "max_val": 4,
-        "alpha": 30
+        "alpha": 5
     },
     "reconstruction":{
         "step_size": 1e-3,
@@ -35,7 +35,7 @@
         "use_wandb": true,
         "project_name": "Spectral_FPM",
         "save_dir": "results",
-        "run_name": "20250126_num_leds_sweep_na005_newspiral",
+        "run_name": "20250127_num_leds_sweep_na005_newspiral",
         "visualize": false,
         "tags": ["num_leds_sweep", "na005", "newspiral"]
     }

@@ -389,7 +389,7 @@ class FPM_setup:
         Returns:
             torch.Tensor: The pupil stack.
         """
-        pupilstack = torch.zeros([self.Nw, self.Ny, self.Nx])
+        pupilstack = torch.zeros([self.Nw, self.Ny, self.Nx], dtype=torch.complex64)
         for k in np.arange(self.Nw):
             wv = self.wv[k]
             pupilstack[k, :, :] = self.createPupilStop(wv)
@@ -798,7 +798,7 @@ class FPM_setup:
         if wavelength_index is not None:
             # Show pupil
             plt.subplot(131)
-            plt.imshow(self.pupilstack[wavelength_index])
+            plt.imshow(self.pupilstack[wavelength_index].real)
             plt.title(f'Pupil for λ = {int(self.wv[wavelength_index]*1000)}nm')
             plt.colorbar()
             plt.xlabel('kx')
@@ -814,7 +814,7 @@ class FPM_setup:
             
             # Show combination
             plt.subplot(133)
-            plt.imshow(self.pupilstack[wavelength_index] + self.aperture_stack[wavelength_index])
+            plt.imshow(self.pupilstack[wavelength_index].real + self.aperture_stack[wavelength_index])
             plt.title('Pupil + Aperture')
             plt.colorbar()
             plt.xlabel('kx')
@@ -822,7 +822,7 @@ class FPM_setup:
         else:
             # Show sum of pupils
             plt.subplot(131)
-            plt.imshow(torch.sum(self.pupilstack, axis=0))
+            plt.imshow(torch.sum(self.pupilstack, axis=0).real)
             plt.title('Sum of all pupils')
             plt.colorbar()
             plt.xlabel('kx')
@@ -839,7 +839,7 @@ class FPM_setup:
             # Show sum of combination
             plt.subplot(133)
             k=-1
-            plt.imshow(self.pupilstack[k,:,:]+self.aperture)
+            plt.imshow(self.pupilstack[k,:,:].real+self.aperture)
             plt.xlabel('k_x')
             plt.ylabel('k_y')
             plt.title('wv = ' + str(int(self.wv[k]*1000)) + "nm")
@@ -927,6 +927,7 @@ class Reconstruction:
         self.Nw = fpm_setup.Nw
         self.Nx = fpm_setup.Nx
         self.Ny = fpm_setup.Ny
+        self.gt_spectral_obj = fpm_setup.objstack.clone() # create a deep copy of the ground truth object
         if measstack is not None:
             self.fpm_setup.measstack = measstack
         self.num_meas = len(self.fpm_setup.measstack)
@@ -1288,9 +1289,50 @@ class Reconstruction:
                 fig = self.plot_object_estimate(self.objest.detach().cpu().numpy()[k,:,:])
                 self.wandb_run.log({"Final Recon for Wavelength {}".format(k): wandb.Image(fig)})
                 plt.close(fig)
+            fig2 = self.plot_rgb_comparison(self.objest.detach().cpu(), self.gt_spectral_obj.detach().cpu(), self.fpm_setup.wv)
+            self.wandb_run.log({"Final Recon RGB Comparison": wandb.Image(fig2)})
+            plt.close(fig2)
             self.wandb_run.finish()
             self.wandb_run = None  # Clear the run after finishing
         self.wandb_active = False
+    
+    def plot_rgb_comparison(self, objest, gt, wv, show_plot=False):
+        """
+        Plot the RGB comparison between the reconstruction and the ground truth.
+        """
+        # Create figure without displaying
+        plt.ioff()  # Turn off interactive mode 
+        rgb_recon = spectral_obj_to_color(objest.detach().cpu(), wv)
+        rgb_gt = spectral_obj_to_color(gt.detach().cpu(), wv)
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 12))
+        im1 = ax1.imshow(rgb_recon.detach().cpu().numpy())
+        ax1.set_title('Reconstructed RGB', fontsize=16)
+        ax1.axis('off')
+        im2 = ax2.imshow(rgb_gt.detach().cpu().numpy())
+        ax2.set_title('Ground Truth RGB', fontsize=16)
+        ax2.axis('off')
+        center_y, center_x = rgb_recon.shape[0] // 2, rgb_recon.shape[1] // 2
+        zoom_size = 200  # Adjust this value to change zoom level
+        zoom_recon = rgb_recon.detach().cpu().numpy()[
+            center_y - zoom_size // 2:center_y + zoom_size // 2,
+            center_x - zoom_size // 2:center_x + zoom_size // 2
+        ]
+        zoom_gt = rgb_gt.detach().cpu().numpy()[
+            center_y - zoom_size // 2:center_y + zoom_size // 2,
+            center_x - zoom_size // 2:center_x + zoom_size // 2
+        ]
+        im3 = ax3.imshow(zoom_recon)
+        ax3.set_title('Zoomed Reconstructed RGB', fontsize=16)
+        ax3.axis('off')
+        im4 = ax4.imshow(zoom_gt)
+        ax4.set_title('Zoomed Ground Truth RGB', fontsize=16) 
+        ax4.axis('off')
+        plt.tight_layout()
+        
+        if show_plot:
+            plt.ion()  # Turn interactive mode back on
+            plt.show(block=False)
+        return fig
 
     def plot_object_estimate(self, obj2d, show_plot=False):
         """
@@ -1372,9 +1414,11 @@ class Reconstruction:
             - All metrics are computed on normalized images (0 to 1 range)
         """
         import torch.nn.functional as F
-        from torchmetrics.functional import structural_similarity_index_measure as ssim
+        from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
         from torchmetrics.functional import peak_signal_noise_ratio as psnr
         
+        ssim = MultiScaleStructuralSimilarityIndexMeasure(kernel_size=11, data_range=1.0)
+
         # Check if ground truth exists
         if not hasattr(self.fpm_setup, 'obj'):
             raise ValueError("Ground truth object not found in FPM setup")
@@ -1398,7 +1442,7 @@ class Reconstruction:
             
             # Compute metrics
             metrics_log[f'wavelength_{self.fpm_setup.wv[k] * 1000:.0f}nm'] = {
-                'ssim': float(ssim(curr_recon, curr_ground_truth, data_range=1.0)),
+                'ssim': float(ssim(curr_recon, curr_ground_truth)),
                 'psnr': float(psnr(curr_recon, curr_ground_truth, data_range=1.0)),
                 'mse': float(F.mse_loss(curr_recon, curr_ground_truth)),
                 'mae': float(F.l1_loss(curr_recon, curr_ground_truth))
@@ -1538,8 +1582,11 @@ def save_simulation_results(fpm_setup, recon, save_path):
         fig.savefig(save_path / f'final_reconstruction_wavelength_{k}.png', bbox_inches='tight', dpi=300)
         plt.close(fig)
     
-    plt.savefig(save_path / 'final_reconstruction.png')
-    plt.close()
+
+    # save RGB comparison
+    fig = recon.plot_rgb_comparison(recon.objest.detach().cpu(), recon.gt_spectral_obj.detach().cpu(), recon.fpm_setup.wv)
+    fig.savefig(save_path / 'final_reconstruction_rgb.png', bbox_inches='tight', dpi=300)
+    plt.close(fig)
 
     if recon.wandb_active:
         recon.wandb_finish()
@@ -1560,7 +1607,8 @@ def spectral_obj_to_color(spectral_obj, wavelengths):
     torch.Tensor
         3D tensor of shape (height, width, 3) containing the RGB image
     """
-    
+    if wavelengths[0] < 1: # if wavelengths are in microns, convert to nm
+        wavelengths = wavelengths * 1e3
     # Initialize RGB image
     height, width = spectral_obj.shape[1:]
     rgb_img = torch.zeros((height, width, 3), device=spectral_obj.device)

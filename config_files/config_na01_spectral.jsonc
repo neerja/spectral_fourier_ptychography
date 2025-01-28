@@ -16,15 +16,15 @@
         "spacing": 5.0,
         "distance": 75.0,
         "pattern": "spiral",
-        "num_leds": 300,
+        "num_leds": 160,
         "min_val": -4,
         "max_val": 4,
         "alpha": 10
     },
-    "r/home/neerja/CODE/SpectralPtychographyProjectGitRepo/results/test_run/1v90xcv1econstruction":{
+    "reconstruction":{
         "step_size": 1e-3,
         "num_iterations": 50,
-        "epochs": 3,
+        "epochs": 5,
         "loss_type": "2-norm",
         "optimizer": "Adam",
         "device": "cuda",
@@ -36,8 +36,8 @@
         "use_wandb": true,
         "project_name": "Spectral_FPM",
         "save_dir": "results",
-        "run_name": "20250126_na01_spectral_varying",
+        "run_name": "20250127_na01_spectral_varying",
         "visualize": false,
-        "tags": ["spectral", "debugging"]
+        "tags": ["spectral", "aperture", "8channel", "varying", "na01"]
     }
 }
