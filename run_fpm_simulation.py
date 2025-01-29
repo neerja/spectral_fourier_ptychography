@@ -109,7 +109,7 @@ def run_spectral_fpm_simulation(config_path):
     if recon_cfg['device'] == 'cuda':
         device = fpm_helper.use_gpu(recon_cfg['gpu_index'])
     
-    if config['reconstruction']['reg_type'] == 'L1' or config['reconstruction']['reg_type'] == 'L2':
+    if config['reconstruction']['reg_type'] != 'none':
         recon = fpm_helper.SparseReconstruction(
             fpm_setup=fpm_setup,
             device=device, 

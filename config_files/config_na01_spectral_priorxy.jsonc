@@ -1,0 +1,43 @@
+{
+    "microscope": {
+        "magnification": 4,
+        "pixel_size_camera": 4.0,
+        "na_objective": 0.1,
+        "wavelength": {
+            "start": 0.5,
+            "end": 0.9, 
+            "step": 0.05
+        },
+        "aperture": "spectral_filter",
+        "spectral_obj": "varying"
+    },
+
+    "led_array": {
+        "spacing": 5.0,
+        "distance": 75.0,
+        "pattern": "spiral",
+        "num_leds": 160,
+        "min_val": -4,
+        "max_val": 4,
+        "alpha": 10
+    },
+    "reconstruction":{
+        "step_size": 1e-3,
+        "num_iterations": 50,
+        "epochs": 5,
+        "loss_type": "2-norm",
+        "optimizer": "Adam",
+        "device": "cuda",
+        "gpu_index": 0,
+        "reg_type": "xy_gradient_L1",
+        "tau_reg": 1e-5
+    },
+    "logging": {
+        "use_wandb": true,
+        "project_name": "Spectral_FPM",
+        "save_dir": "results",
+        "run_name": "20250128_na01_spectral_prior",
+        "visualize": false,
+        "tags": ["spectral", "aperture", "8channel", "varying", "na01", "priors"]
+    }
+}

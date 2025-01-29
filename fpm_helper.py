@@ -1417,7 +1417,8 @@ class Reconstruction:
         from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
         from torchmetrics.functional import peak_signal_noise_ratio as psnr
         
-        ssim = MultiScaleStructuralSimilarityIndexMeasure(kernel_size=11, data_range=1.0)
+        # Create SSIM metric on the correct device
+        ssim = MultiScaleStructuralSimilarityIndexMeasure(kernel_size=11, data_range=1.0).to(self.device)
 
         # Check if ground truth exists
         if not hasattr(self.fpm_setup, 'obj'):
@@ -1425,7 +1426,7 @@ class Reconstruction:
         
         # Get reconstruction and ground truth
         recon_est = self.objest.detach()
-        ground_truth = self.fpm_setup.obj.to(recon_est.device)
+        ground_truth = self.fpm_setup.obj.to(self.device)  # Move ground truth to correct device
         
         # Normalize ground truth
         ground_truth = (ground_truth - ground_truth.min()) / (ground_truth.max() - ground_truth.min())
@@ -1457,18 +1458,12 @@ class Reconstruction:
             curr_ground_truth = ground_truth.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, H, W]
             
             metrics_log['summed_wavelengths'] = {
-                'ssim': float(ssim(curr_recon, curr_ground_truth, data_range=1.0)),
+                'ssim': float(ssim(curr_recon, curr_ground_truth)),
                 'psnr': float(psnr(curr_recon, curr_ground_truth, data_range=1.0)),
                 'mse': float(F.mse_loss(curr_recon, curr_ground_truth)),
                 'mae': float(F.l1_loss(curr_recon, curr_ground_truth))
             }
-        
-        # # Log final metrics to wandb if active
-        # if self.wandb_active:
-        #     # Log final metrics directly to summary
-        #     for wavelength, metrics in metrics_log.items():
-        #         for metric_name, value in metrics.items():
-        #             self.wandb_run.summary[f"{wavelength}/{metric_name}"] = value
+
 
         return metrics_log
 
@@ -1515,9 +1510,19 @@ class SparseReconstruction(Reconstruction):
         if reg_type == 'none':
             self.regularizer = None
         elif reg_type == 'L1':
-            self.regularizer = lambda objest: torch.norm(objest, p=1)
+            self.regularizer = lambda objest: torch.norm(torch.sum(objest, dim=0), p=1)
         elif reg_type == 'L2':
             self.regularizer = lambda objest: torch.norm(objest, p=2)
+        elif reg_type == 'xy_gradient_L1':
+            # Sum the L1 norms of the x and y gradients
+            self.regularizer = lambda objest: sum(torch.norm(g, p=1) for g in torch.gradient(objest, dim=(1,2)))
+        elif reg_type == 'del2_spectral_L1':
+            self.regularizer = lambda objest: torch.norm(torch.diff(torch.diff(objest, dim=0), dim=0), p=1)
+        elif reg_type == 'del2_spectral_L1_and_xy_gradient_L1':
+            self.regularizer = lambda objest: (
+                torch.norm(torch.diff(torch.diff(objest, dim=0), dim=0), p=1) + 
+                sum(torch.norm(g, p=1) for g in torch.gradient(objest, dim=(1,2)))
+            )
         else:
             raise ValueError("Regularizer type not recognized")
         return self.regularizer
@@ -1542,11 +1547,11 @@ class SparseReconstruction(Reconstruction):
             self.lossfunc = lambda yest, meas, objest=None, **kwargs: data_lossfunc(yest, meas) + self.tau_reg * self.regularizer(objest)
         return self.lossfunc
 
-    def wandb_init(self):
+    def wandb_init(self, config = None):
         """
         Initialize wandb logging and log important reconstruction parameters.
         """
-        super().wandb_init()
+        super().wandb_init(config)
         
         self.wandb_run.config.update({
             "tau_reg": self.tau_reg,
